@@ -87,8 +87,11 @@ MODEL_TRANSITIONS: _T = {
     ModelState.EVALUATED: frozenset(
         {ModelState.ACCEPTED, ModelState.REJECTED, ModelState.ARCHIVED}
     ),
-    ModelState.REJECTED: frozenset({ModelState.ARCHIVED}),
-    ModelState.ACCEPTED: frozenset({ModelState.EXPORTED, ModelState.ARCHIVED}),
+    # Re-evaluation is allowed until the model has been exported.
+    ModelState.REJECTED: frozenset({ModelState.EVALUATED, ModelState.ARCHIVED}),
+    ModelState.ACCEPTED: frozenset(
+        {ModelState.EVALUATED, ModelState.EXPORTED, ModelState.ARCHIVED}
+    ),
     ModelState.EXPORTED: frozenset(
         {ModelState.BENCHMARKED, ModelState.DEPLOYED, ModelState.ARCHIVED}
     ),
