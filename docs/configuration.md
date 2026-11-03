@@ -49,8 +49,8 @@ Created by `ai-pipeline project create <name>` from `ai_pipeline/templates/defau
 |---|---|---|
 | `schema_version` | `1` | |
 | `project` | `name`, `task_type`, `description` | `name` must equal the directory name and match `^[a-z][a-z0-9_]{0,63}$`; `task_type` must be a registered task module (`object_detection`) |
-| `dataset` | `classes`, `label_format`, `sources[]`, `split{train,val,test,seed}`, `validation{min_images,min_instances_per_class,max_empty_label_ratio}` | classes unique and ordered (index = position); `label_format` must be supported by the task module; split sums to 1 with train, val > 0 |
-| `dataset.sources[]` | `type: local_images` + `path`, or `type: rtsp_capture` + `url`, `frames`, `interval_s` | |
+| `dataset` | `classes`, `label_format`, `sources[]`, `split{train,val,test,seed}`, `validation{min_images,min_instances_per_class,max_empty_label_ratio,fail_on_warnings}` | classes unique and ordered (index = position); `label_format` must be supported by the task module; split sums to 1 with train, val > 0; `fail_on_warnings` (default false) makes validation warnings block `dataset build` |
+| `dataset.sources[]` | `type: local_images` + `path` (relative to the project dir; default source for `data import`), or `type: rtsp_capture` + `url`, `frames`, `interval_s` (capture not implemented yet) | |
 | `labeling.auto` | `provider`, `weights`, `class_map`, `confidence`, `backend` | optional; `class_map` maps pretrained class → project class, unmapped classes are dropped |
 | `model` | `provider`, `candidates[{name, weights}]` | provider ∈ `ultralytics`, `fake`; candidate names unique |
 | `training` | `backend`, `epochs`, `image_size`, `batch_size`, `device`, `provider_args{}` | `backend` must exist in `infrastructure.yaml`; `provider_args` are passed through unvalidated |

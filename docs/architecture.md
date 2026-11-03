@@ -43,13 +43,34 @@ Only `providers` names exist in M0; `backends` and `targets` are added in M2/M3.
 | `core.errors` | `PipelineError` hierarchy with `code`, `details`, `hint`, exit code |
 | `cli.*` | typer commands; `run_command` turns exceptions into envelopes + exit codes |
 
+## Data modules (M1) — details in [datasets.md](datasets.md)
+
+| Module | Responsibility |
+|---|---|
+| `core.data.assets` | immutable content-addressed `AssetStore` (SHA-256 ids, read-only files, sidecar metadata) |
+| `core.data.importer` | `data import`: walk sources, probe images, add to the store, record the import event |
+| `core.labeling.annotations` | canonical `Annotation` model (normalised bbox, class name, provenance), JSONL IO |
+| `core.labeling.labelsets` | `label import`: match label files to assets by stem, convert via the task module, store a label set |
+| `core.dataset.split` | deterministic hash-ranked split with largest-remainder sizes |
+| `core.dataset.hashing` | `content_hash` over canonical dataset content (`dataset-hash-v1`) |
+| `core.dataset.validation` | task-agnostic `ValidationReport` / `Issue` / `Severity` |
+| `core.dataset.build` | plan (validate + hash + lookup) and immutable materialisation of a version |
+| `tasks.object_detection.yolo` | YOLO txt ↔ canonical conversion |
+| `tasks.object_detection.validation` | detection-specific validation rules (ERROR vs WARNING) |
+
+The task module is the only place that knows YOLO; core never reads or writes label files
+directly.
+
 ## Filesystem layout at runtime
 
 ```
 projects/<name>/project.yaml        committed
 projects/<name>/data/               gitignored: raw images, labels
 artifacts/<name>/project.json       pointers (created lazily if missing)
+artifacts/<name>/assets/            content-addressed immutable images + sidecars
 artifacts/<name>/{imports,labels,datasets,runs,models,deployments}/<id>.json
+artifacts/<name>/labels/<id>/annotations.jsonl
+artifacts/<name>/datasets/<ds_version>/     immutable materialised dataset
 artifacts/<name>/logs/
 ```
 

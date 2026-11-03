@@ -18,17 +18,32 @@ project name explicitly, and can emit a machine-readable envelope with `--output
 
 Logs always go to **stderr**; stdout carries only the command's output.
 
-## Commands implemented (M0)
+## Commands implemented
+
+### Project (M0)
 
 | Command | Effect | Typical exit codes |
 |---|---|---|
 | `project create <name> [--task object_detection] [--template default]` | scaffold `projects/<name>/project.yaml`, `README.md`, `data/raw/`; initialise `artifacts/<name>/project.json` | 0, 2 (bad name/task), 3 (exists) |
 | `project validate <name>` | load and fully validate the project config, including infrastructure references | 0, 2, 3 (not found) |
 | `project list` | list projects under the projects root with validity | 0 |
-| `status <name>` | pointers, entity counts, latest/active runs, `next_operations` | 0, 3 |
+| `status <name>` | pointers, entity counts (incl. assets), latest/active runs, `next_operations` | 0, 3 |
 
-Planned command groups (`data`, `label`, `dataset`, `train`, `evaluate`, `model`, `export`,
-`target`, `benchmark`, `deploy`, `rollback`, `health`) are specified in
+### Data, labels, datasets (M1) — see [datasets.md](datasets.md)
+
+| Command | Effect | Typical exit codes |
+|---|---|---|
+| `data import <name> [<source>] [--no-recursive]` | import images into the content-addressed asset store; default source = `dataset.sources` of type `local_images` | 0 (also when nothing new), 1 (`NO_IMAGES_FOUND`, `IMPORT_SOURCE_MISSING`), 2 (`NO_LOCAL_IMAGE_SOURCE`) |
+| `data list <name>` | import events and total asset count | 0 |
+| `label import <name> <path> [--format yolo] [--classes-file f] [--import id]…` | convert label files to a canonical label set (`kind: imported`) | 0, 1 (`NO_ASSETS`, `AMBIGUOUS_STEMS`, `LABEL_SOURCE_MISSING`) |
+| `label list <name>` | label sets with counts and parse-issue totals | 0 |
+| `dataset validate <name> [--labels id] [--import id]… [--verify-assets]` | task-owned validation report; writes nothing | 0 valid, 1 `DATASET_INVALID` (report still in `result`) |
+| `dataset build <name> [--labels id] [--import id]…` | validate, then build an immutable version; idempotent on content (`created: false`) | 0, 1 (`DATASET_INVALID`, `DATASET_BUILD_FAILED`) |
+| `dataset list <name>` | versions with state, counts, short hash; `*` marks the current pointer | 0 |
+| `dataset show <name> <version> [--manifest]` | full `dataset.json` (provenance, config snapshot, validation) | 0, 3 (`DATASET_NOT_FOUND`) |
+
+Planned command groups (`train`, `evaluate`, `model`, `export`, `target`, `benchmark`,
+`deploy`, `rollback`, `health`) are specified in
 [design/v1-architecture-proposal.md §13](design/v1-architecture-proposal.md) and are added
 milestone by milestone.
 
@@ -51,7 +66,10 @@ milestone by milestone.
 - On failure `result` is `{}` and `error` is
   `{ "code", "message", "details", "hint" }`. `code` is stable and machine-matchable
   (e.g. `PROJECT_NOT_FOUND`, `CONFIG_INVALID`, `CONFIG_INFRA_MISMATCH`, `PROJECT_EXISTS`,
-  `ENV_VAR_MISSING`, `INFRA_FILE_MISSING`, `ILLEGAL_TRANSITION`, `INTERNAL_ERROR`).
+  `ENV_VAR_MISSING`, `INFRA_FILE_MISSING`, `ILLEGAL_TRANSITION`, `DATASET_INVALID`,
+  `AMBIGUOUS_STEMS`, `INTERNAL_ERROR`).
+- `dataset validate` is the one command that returns `status: failed` *with* a populated
+  `result` (the full report), so an agent can read the issues without a second call.
 - `next_operations` are suggestions, expressed as `ai-pipeline` argument strings.
 - Exactly one JSON document is written to stdout, also on failure.
 
