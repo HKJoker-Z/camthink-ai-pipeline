@@ -103,6 +103,8 @@ class DatasetValidationConfig(_Strict):
     min_images: int = Field(default=1, ge=1)
     min_instances_per_class: int = Field(default=1, ge=0)
     max_empty_label_ratio: float = Field(default=1.0, ge=0, le=1)
+    # Warnings never invalidate a dataset unless the project says so.
+    fail_on_warnings: bool = False
 
 
 class DatasetConfig(_Strict):
