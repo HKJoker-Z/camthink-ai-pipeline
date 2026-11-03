@@ -19,8 +19,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Installed on the compute host (the AI server in V1). Added in M2.
-provider-ultralytics = []
+# Installed only in the interpreter that runs jobs (compute_backends.<name>.python).
+# Never imported by the CLI/control plane.
+provider-ultralytics = ["ultralytics>=8.3"]
 dev = [
     "pytest>=8",
     "pytest-cov>=5",
