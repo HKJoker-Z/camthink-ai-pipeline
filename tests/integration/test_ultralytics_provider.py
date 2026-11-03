@@ -89,4 +89,22 @@ def test_ultralytics_train_evaluate_autolabel_on_cpu(workspace: Path, tmp_path: 
     assert rec["source"]["kind"] == "model" and rec["source"]["provider"] == "ultralytics"
     assert all(a.source.kind == "model" for a in anns)
 
+    # real ONNX export through the job runner (ultralytics installs onnx as an export dep)
+    from ai_pipeline.core.exports import start_export
+
+    ex_run, existing = start_export(p, model_version=mv)
+    assert existing is None
+    ex_run = wait_run(p, ex_run["run_id"], timeout_s=600)
+    assert ex_run["state"] == "COMPLETED", ex_run.get("error")
+    export = p.store.read("exports", ex_run["export_id"])
+    onnx_path = p.settings.artifact_root / export["artifact"]["path"]
+    assert onnx_path.is_file() and onnx_path.read_bytes()[:4] != b"FAKE"
+    assert (
+        export["artifact"]["size_bytes"] > 1_000_000
+        and export["details"]["exporter"] == "ultralytics"
+    )
+    assert export["environment"]["ultralytics"]
+    train_dir = p.settings.artifact_root / run["outputs"]["weights"]
+    assert not train_dir.with_suffix(".onnx").exists(), "export must not write into the train run"
+
     shutil.rmtree(p.artifact_dir, ignore_errors=True)

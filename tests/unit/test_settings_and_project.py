@@ -144,7 +144,17 @@ def test_project_status_fresh(settings: Settings):
     s = project_status(p)
     assert s["project"] == "demo_e"
     assert s["counts"] == {
-        k: 0 for k in ("imports", "labels", "datasets", "runs", "models", "deployments", "assets")
+        k: 0
+        for k in (
+            "imports",
+            "labels",
+            "datasets",
+            "runs",
+            "models",
+            "exports",
+            "deployments",
+            "assets",
+        )
     }
     assert s["latest_run"] is None
     assert s["next_operations"] == ["data import demo_e <path>"]
@@ -200,8 +210,27 @@ def test_next_operations_progression():
         "model select p"
     ]
     selected = {**ptr, "selected_model_version": "mv-001"}
-    assert next_operations("p", full, selected, [], model_states={"mv-001": "ACCEPTED"}) == [
-        "model show p mv-001",
+    acc = {"mv-001": "ACCEPTED"}
+    assert next_operations("p", full, selected, [], model_states=acc) == ["export start p"]
+    assert next_operations(
+        "p", full, selected, [], model_states=acc, exported_models={"mv-001"}
+    ) == ["deploy start p"]
+    live = {**selected, "active_deployment": "dep-001"}
+    assert next_operations("p", full, live, [], model_states=acc, exported_models={"mv-001"}) == [
+        "health p",
+        "deploy status p",
         "train start p",
     ]
+    assert (
+        next_operations(
+            "p",
+            full,
+            selected,
+            [],
+            model_states=acc,
+            exported_models={"mv-001"},
+            deployment_states={"dep-001": "SUPERSEDED", "dep-002": "ROLLBACK_FAILED"},
+        )[0]
+        == "health p"
+    )
     assert next_operations("p", full, selected, ["run-9"]) == ["run status p run-9"]
