@@ -61,6 +61,24 @@ Only `providers` names exist in M0; `backends` and `targets` are added in M2/M3.
 The task module is the only place that knows YOLO; core never reads or writes label files
 directly.
 
+## Execution modules (M2) — details in [runs-and-models.md](runs-and-models.md)
+
+| Module | Responsibility |
+|---|---|
+| `core.jobs.spec` | `JobSpec` / `JobStatus` / `JobResult` file schemas (the only contract across the compute boundary) |
+| `core.jobs.runner` | `python -m ai_pipeline.core.jobs.runner <job_dir>`: loads the provider, executes, writes status/result |
+| `core.jobs.context` | what a provider sees: job dir, resolve/relpath helpers, `report_progress` |
+| `core.runs` | run records; `start_training/evaluation/autolabel`, `submit`, `sync`, `wait`, `cancel`; post-completion hooks |
+| `core.registry` | model versions: `register_from_run`, `apply_evaluation`, `select_model`, state transitions |
+| `core.evaluation.policy` | `apply_rules(metrics, rules)` — project-configured acceptance, no built-in policy |
+| `backends.local` | detached subprocess backend; dead-runner detection; cancel |
+| `providers.fake` | deterministic provider for tests |
+| `providers.ultralytics` | YOLO train/val/predict → task metric names; imported only inside the runner |
+
+Seam status: `ComputeBackend` has `local` (production for V1, where control host == compute
+host) and a schema slot for `ssh` (M4). `DeploymentTarget` is defined in the design only until
+M3.
+
 ## Filesystem layout at runtime
 
 ```
@@ -71,6 +89,7 @@ artifacts/<name>/assets/            content-addressed immutable images + sidecar
 artifacts/<name>/{imports,labels,datasets,runs,models,deployments}/<id>.json
 artifacts/<name>/labels/<id>/annotations.jsonl
 artifacts/<name>/datasets/<ds_version>/     immutable materialised dataset
+artifacts/<name>/runs/<run_id>/             job dir: job.json, status.json, runner.log, out/
 artifacts/<name>/logs/
 ```
 

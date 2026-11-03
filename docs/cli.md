@@ -42,10 +42,29 @@ Logs always go to **stderr**; stdout carries only the command's output.
 | `dataset list <name>` | versions with state, counts, short hash; `*` marks the current pointer | 0 |
 | `dataset show <name> <version> [--manifest]` | full `dataset.json` (provenance, config snapshot, validation) | 0, 3 (`DATASET_NOT_FOUND`) |
 
-Planned command groups (`train`, `evaluate`, `model`, `export`, `target`, `benchmark`,
-`deploy`, `rollback`, `health`) are specified in
-[design/v1-architecture-proposal.md §13](design/v1-architecture-proposal.md) and are added
-milestone by milestone.
+### Runs, training, evaluation, registry (M2) — see [runs-and-models.md](runs-and-models.md)
+
+| Command | Effect | Typical exit codes |
+|---|---|---|
+| `label auto <name> [--import id]… [--weights w] [--confidence c] [--backend b] [--wait] [--timeout s]` | submit an auto-label job; on completion a `kind: model` label set is created (nothing built/merged) | 0, 1 (`RUN_FAILED`), 3 (`NO_ASSETS`, `NO_AUTOLABEL_CONFIG`) |
+| `train start <name> [--dataset ds] [--candidate c] [--backend b] [--wait] [--timeout s]` | create + submit a training run (new run id each time) | 0, 1 (`RUN_FAILED`, `BACKEND_NOT_IMPLEMENTED`), 3 (`NO_DATASET`, `DATASET_NOT_READY`, `CANDIDATE_UNKNOWN`) |
+| `train status <name> <run_id> [--wait] [--tail N]` / `train list <name>` | aliases of `run status` / `run list --kind train` | |
+| `run status <name> <run_id> [--wait] [--timeout s] [--tail N]` | sync the run with its job, run post-processing on completion | 0, 1 (`RUN_FAILED`, `RUN_CANCELLED`, `RUN_POST_PROCESS_FAILED`, `RUN_WAIT_TIMEOUT`), 3 (`RUN_NOT_FOUND`) |
+| `run list <name> [--kind k] [--no-sync]` | list runs, refreshing active ones | 0 |
+| `run logs <name> <run_id> [--tail N]` | runner log | 0 |
+| `run cancel <name> <run_id>` | cancel a non-terminal run | 0 |
+| `evaluate run <name> <mv> [--dataset ds] [--split s] [--backend b] [--wait]` | submit an evaluation; on completion the model gets `metrics.eval` and an acceptance verdict (`ACCEPTED`/`REJECTED`) | 0, 1, 3 (`MODEL_NOT_FOUND`) |
+| `evaluate status <name> <run_id>` | alias of `run status` | |
+| `model list <name>` / `model show <name> <mv>` | registry listing / full record | 0, 3 |
+| `model register <name> <run_id>` | register a model version from a COMPLETED train run (normally automatic) | 0, 3 (`RUN_NOT_COMPLETED`, `RUN_NOT_TRAIN`) |
+| `model select <name> [<mv>]` | set `selected_model_version` (explicit must be accepted; implicit = best accepted by `selection.primary_metric`) | 0, 3 (`MODEL_NOT_ACCEPTED`, `NO_ACCEPTED_MODEL`) |
+
+Run commands return `status: failed` with the run record in `result` when the run itself
+FAILED/CANCELLED, so the agent gets the error, timestamps and log pointer in one call.
+
+Planned command groups (`export`, `target`, `benchmark`, `deploy`, `rollback`, `health`) are
+specified in [design/v1-architecture-proposal.md §13](design/v1-architecture-proposal.md) and
+are added milestone by milestone.
 
 ## JSON envelope
 

@@ -20,8 +20,9 @@ artifact_root: ./artifacts     # override: AIP_ARTIFACT_ROOT / --artifact-root
 
 compute_backends:              # at least one
   local:                       # name referenced by project.yaml
-    type: local                # local | ssh
-    python: python             # interpreter with the provider extra installed
+    type: local                # local | ssh (ssh: schema only until M4)
+    # python: /path/to/venv/bin/python   # interpreter that runs jobs; must have the
+                                         # provider extra installed. Default: the CLI's own.
   # remote:
   #   type: ssh
   #   ssh_host: ai-server      # ~/.ssh/config alias or user@host
@@ -51,10 +52,10 @@ Created by `ai-pipeline project create <name>` from `ai_pipeline/templates/defau
 | `project` | `name`, `task_type`, `description` | `name` must equal the directory name and match `^[a-z][a-z0-9_]{0,63}$`; `task_type` must be a registered task module (`object_detection`) |
 | `dataset` | `classes`, `label_format`, `sources[]`, `split{train,val,test,seed}`, `validation{min_images,min_instances_per_class,max_empty_label_ratio,fail_on_warnings}` | classes unique and ordered (index = position); `label_format` must be supported by the task module; split sums to 1 with train, val > 0; `fail_on_warnings` (default false) makes validation warnings block `dataset build` |
 | `dataset.sources[]` | `type: local_images` + `path` (relative to the project dir; default source for `data import`), or `type: rtsp_capture` + `url`, `frames`, `interval_s` (capture not implemented yet) | |
-| `labeling.auto` | `provider`, `weights`, `class_map`, `confidence`, `backend` | optional; `class_map` maps pretrained class → project class, unmapped classes are dropped |
-| `model` | `provider`, `candidates[{name, weights}]` | provider ∈ `ultralytics`, `fake`; candidate names unique |
-| `training` | `backend`, `epochs`, `image_size`, `batch_size`, `device`, `provider_args{}` | `backend` must exist in `infrastructure.yaml`; `provider_args` are passed through unvalidated |
-| `evaluation` | `split` (`val`/`test`), `metrics[]`, `acceptance{metric: {min,max}}`, `selection.primary_metric` | metrics must be known to the task module (`precision`, `recall`, `f1`, `mAP50`, `mAP50-95`); acceptance keys and `primary_metric` must be in `metrics` |
+| `labeling.auto` | `provider`, `weights`, `class_map`, `confidence`, `backend` | optional; used by `label auto`. `class_map` maps the pretrained model's class names → project classes; detections of unmapped source classes are dropped |
+| `model` | `provider`, `candidates[{name, weights}]` | provider ∈ `ultralytics`, `fake`; candidate names unique; `train start --candidate` picks one (default: first) |
+| `training` | `backend`, `epochs`, `image_size`, `batch_size`, `device`, `provider_args{}` | `backend` must exist in `infrastructure.yaml`; `provider_args` are passed through to the provider unvalidated (fake provider: `fake_metrics`, `fake_fail`, `fake_sleep_s`) |
+| `evaluation` | `split` (`val`/`test`), `metrics[]`, `acceptance{metric: {min,max}}`, `selection.primary_metric` | metrics must be known to the task module (`precision`, `recall`, `f1`, `mAP50`, `mAP50-95`); acceptance keys and `primary_metric` must be in `metrics`. All acceptance rules must pass for a model to become `ACCEPTED`; `primary_metric` ranks accepted models for `model select` |
 | `export` | `format` (`onnx`), `opset`, `image_size`, `dynamic` | |
 | `deployment` | `target`, `runtime` (`tensorrt`), `precision` (`fp16`/`fp32`), `acceptance{}`, `health{timeout_s, interval_s}`, `keep_versions` | `target` must exist in `infrastructure.yaml`; acceptance keys ∈ `latency_ms_p50`, `latency_ms_p95`, `fps`, `memory_mb`, `gpu_util_pct` |
 

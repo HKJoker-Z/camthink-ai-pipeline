@@ -58,8 +58,11 @@ as JSON lines of:
   via the asset's recorded width/height.
 - Classes are referenced by **name**; indices are assigned at build time from the project's
   class order, so re-ordering classes never requires rewriting labels.
-- `source.kind` is one of `human`, `imported`, `model`. Auto-labeling (M2) will write
-  `kind: model` with `ref` = weights identifier; nothing else needs to change.
+- `source.kind` is one of `human`, `imported`, `model`. Auto-labeling (`label auto`) writes
+  `kind: model` with `ref` = weights identifier plus `run_id` and `provider`.
+- **One label set per dataset build.** Label sets are never merged automatically. A
+  model-generated set can later be reviewed into a new corrected set that records
+  `parent_label_set_id` (lineage), and that set is what gets built.
 - Values are stored as parsed: out-of-range or empty boxes are kept so validation can report
   them instead of silently clamping.
 
@@ -148,9 +151,13 @@ acceptance, not content).
 Consequences:
 
 - `dataset build` is idempotent: if a READY version with the same hash exists it is returned
-  with `"created": false` and nothing is written.
-- Re-importing the same labels under a new label set id yields the same version (its recorded
-  provenance is that of the first build).
+  with `"created": false`; the immutable version directory is not touched.
+- Re-importing the same labels under a new label set id yields the same version. Its
+  `provenance` stays that of the first build, but every build request that resolved to the
+  version is appended to `build_history` on the **store record**
+  (`{at, created, label_set_id, import_ids, annotations_sha256}`), so "another import/build
+  produced identical content" is never lost. `dataset.json` inside the version directory keeps
+  only the first entry — it is part of the immutable content snapshot.
 - Changing a box, a class name, class order, the seed or fractions, or adding/removing an image
   produces a new version. Changing `min_images` does not.
 
