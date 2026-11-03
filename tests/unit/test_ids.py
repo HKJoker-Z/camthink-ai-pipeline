@@ -5,7 +5,9 @@ from ai_pipeline.core.ids import new_event_id, next_sequential_id, utc_now_iso
 
 
 def test_utc_now_iso_format():
-    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", utc_now_iso())
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z", utc_now_iso())
+    a, b = utc_now_iso(), utc_now_iso()
+    assert a <= b, "timestamps must sort chronologically as strings"
 
 
 def test_new_event_id_is_prefixed_timestamped_and_unique():

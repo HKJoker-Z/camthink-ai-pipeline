@@ -21,8 +21,11 @@ def utc_now() -> datetime:
 
 
 def utc_now_iso() -> str:
-    """ISO-8601 UTC timestamp with second precision and a trailing Z."""
-    return utc_now().strftime("%Y-%m-%dT%H:%M:%SZ")
+    """ISO-8601 UTC timestamp with microsecond precision and a trailing Z.
+
+    Microseconds matter: "latest record" selections order by this string, and two records
+    created within the same second must still sort deterministically."""
+    return utc_now().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def new_event_id(prefix: str, now: datetime | None = None) -> str:
