@@ -10,7 +10,7 @@ from typing import Any
 
 from ai_pipeline.core.data.assets import AssetStore
 from ai_pipeline.core.project import Project
-from ai_pipeline.core.state import TERMINAL_RUN_STATES, RunState
+from ai_pipeline.core.state import TERMINAL_RUN_STATES, ModelState, RunState
 from ai_pipeline.core.store import KINDS
 
 
@@ -22,11 +22,22 @@ def project_status(project: Project) -> dict[str, Any]:
     pointers = project.pointers()
 
     runs = store.list("runs")
-    latest_run = max(runs, key=lambda r: r.get("created_at", ""), default=None)
+    latest_run = max(
+        runs,
+        key=lambda r: r["timestamps"]["created"] if "timestamps" in r else r.get("created_at", ""),
+        default=None,
+    )
     active_runs = [
         r["run_id"]
         for r in runs
         if r.get("state") and RunState(r["state"]) not in TERMINAL_RUN_STATES
+    ]
+    models = store.list("models")
+    model_states = {m["model_version"]: m["state"] for m in models}
+    completed_train_unregistered = [
+        r["run_id"]
+        for r in runs
+        if r.get("kind") == "train" and r.get("state") == "COMPLETED" and not r.get("model_version")
     ]
 
     summary = {
@@ -39,13 +50,28 @@ def project_status(project: Project) -> dict[str, Any]:
         "pointers": pointers,
         "counts": counts,
         "latest_run": (
-            {k: latest_run.get(k) for k in ("run_id", "kind", "state", "created_at")}
+            {
+                "run_id": latest_run["run_id"],
+                "kind": latest_run.get("kind"),
+                "state": latest_run.get("state"),
+                "created_at": (latest_run.get("timestamps") or {}).get(
+                    "created", latest_run.get("created_at")
+                ),
+            }
             if latest_run
             else None
         ),
         "active_runs": active_runs,
+        "model_states": model_states,
     }
-    summary["next_operations"] = next_operations(project.name, counts, pointers, active_runs)
+    summary["next_operations"] = next_operations(
+        project.name,
+        counts,
+        pointers,
+        active_runs,
+        model_states=model_states,
+        unregistered_train_runs=completed_train_unregistered,
+    )
     return summary
 
 
@@ -54,24 +80,30 @@ def next_operations(
     counts: dict[str, int],
     pointers: dict[str, str | None],
     active_runs: list[str],
+    *,
+    model_states: dict[str, str] | None = None,
+    unregistered_train_runs: list[str] | None = None,
 ) -> list[str]:
     """Suggest the operations that make sense now. Advisory only; never enforced."""
-    ops: list[str] = []
+    model_states = model_states or {}
     if active_runs:
-        ops.extend(f"train status {name} {rid}" for rid in active_runs)
-        return ops
+        return [f"run status {name} {rid}" for rid in active_runs]
     if counts["imports"] == 0:
         return [f"data import {name} <path>"]
     if counts["labels"] == 0:
-        return [f"label import {name} <path>"]
+        return [f"label import {name} <path>", f"label auto {name}"]
     if pointers.get("current_dataset_version") is None:
         return [f"dataset validate {name}", f"dataset build {name}"]
-    if counts["runs"] == 0:
-        return [f"train start {name}"]
+    if unregistered_train_runs:
+        return [f"model register {name} {rid}" for rid in unregistered_train_runs]
     if counts["models"] == 0:
-        return [f"train list {name}", f"model register {name} <run_id>"]
+        return [f"train start {name}"]
+    to_evaluate = [mv for mv, s in model_states.items() if s == ModelState.TRAINED.value]
+    if to_evaluate:
+        return [f"evaluate run {name} {mv}" for mv in to_evaluate]
+    accepted = [mv for mv, s in model_states.items() if s == ModelState.ACCEPTED.value]
     if pointers.get("selected_model_version") is None:
-        return [f"model select {name}"]
-    if pointers.get("active_deployment") is None:
-        return [f"export run {name}", f"deploy run {name}"]
-    return [f"health {name}", f"deploy status {name}", f"train start {name}"]
+        if accepted:
+            return [f"model select {name}"]
+        return [f"train start {name}", f"model list {name}"]
+    return [f"model show {name} {pointers['selected_model_version']}", f"train start {name}"]

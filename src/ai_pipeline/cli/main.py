@@ -8,7 +8,16 @@ import typer
 from dotenv import load_dotenv
 
 from ai_pipeline import __version__
-from ai_pipeline.cli import data_cmd, dataset_cmd, label_cmd, project_cmd
+from ai_pipeline.cli import (
+    data_cmd,
+    dataset_cmd,
+    evaluate_cmd,
+    label_cmd,
+    model_cmd,
+    project_cmd,
+    run_cmd,
+    train_cmd,
+)
 from ai_pipeline.cli.context import CliContext, run_command
 from ai_pipeline.cli.output import Envelope
 from ai_pipeline.core.logging import configure_logging
@@ -26,6 +35,10 @@ app.add_typer(project_cmd.app, name="project")
 app.add_typer(data_cmd.app, name="data")
 app.add_typer(label_cmd.app, name="label")
 app.add_typer(dataset_cmd.app, name="dataset")
+app.add_typer(train_cmd.app, name="train")
+app.add_typer(run_cmd.app, name="run")
+app.add_typer(evaluate_cmd.app, name="evaluate")
+app.add_typer(model_cmd.app, name="model")
 
 
 def _version(value: bool) -> None:
