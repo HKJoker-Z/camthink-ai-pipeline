@@ -1,6 +1,26 @@
 # camthink-ai-pipeline — V1 Architecture Proposal
 
-Status: **PROPOSAL — awaiting review. No implementation has started.**
+Status: **ACCEPTED for M0 (2026-11-03) with the topology decision below.**
+
+## Review decisions (2026-11-03)
+
+- **Topology:** `ControlHost == ComputeHost == AI Server` for V1. The AI server
+  runs the `ai-pipeline` CLI, training jobs, the state/metadata store, the model
+  artifacts, and orchestrates deployment to the NG4511 over passwordless SSH
+  (confirmed working). The NG4511 is only a deployment/inference target.
+- **No separate control-host machine** is introduced for V1.
+- The `ComputeBackend` and `DeploymentTarget` seams stay intact; the production
+  `infrastructure.yaml` simply uses the `local` compute backend. The `ssh`
+  backend remains a supported type for a future split.
+- Additional M4/M5 verification items were added (§25, items 20–25).
+
+```
+Human / future Grok Bot
+        ↓
+    AI Server   — ai-pipeline CLI, compute backend (local), store, artifacts
+        ↓  passwordless SSH
+    NG4511      — model/runtime, inference, benchmark, health check, rollback
+```
 
 This document proposes the V1 design of a reusable, automation-friendly AI model
 lifecycle pipeline for CamThink edge devices (first target: NeoEdge NG4511 /
@@ -93,12 +113,14 @@ Three roles, one codebase:
 
 | Role | Runs | Needs |
 |---|---|---|
-| **Control host** | the CLI, state store, orchestration | `ai_pipeline[core]`, `ssh`, `rsync` |
-| **Compute host** (AI server; or local for tests) | job runner: autolabel / train / evaluate / export | `ai_pipeline[provider-ultralytics]` + GPU stack |
+| **Control host** | the CLI, state store, orchestration | `ai_pipeline[core]`, `ssh`, `rsync`/`scp` |
+| **Compute host** | job runner: autolabel / train / evaluate / export | `ai_pipeline[provider-ultralytics]` + GPU stack |
 | **Edge device** (NG4511) | runtime bundle: TRT engine build, inference service, health/benchmark scripts | `edge/` bundle + JetPack stack |
 
-The same repository is installed on all three; the control host ships job specs
-and artifacts, never Python edits.
+**V1 decision:** control host and compute host are the **same machine, the AI
+server** (`local` compute backend). The roles stay distinct in code so that the
+`ssh` backend can split them later without touching orchestration. The control
+host ships job specs and artifacts to the device, never Python edits.
 
 ---
 
@@ -820,9 +842,10 @@ Used by both the `ssh` compute backend and the NG4511 target. `rsync` is
 required on control host, server, and device (verify on device, §25); fallback
 `scp -r` for hosts lacking rsync is a one-line swap behind `upload`.
 
-The **control host** (where the CLI runs) must reach both the server and the
-device over SSH. **ASSUMPTION:** this is the operator's workstation or a small
-always-on Linux box on the lab network; not this Cursor VM.
+The **control host** (where the CLI runs) is the AI server in V1 (review
+decision). It reaches the device over passwordless SSH; the `local` compute
+backend needs no SSH at all. The transfer method to the device (`rsync` vs
+`scp`) is decided in M5 behind `Host.upload` (§25 item 25).
 
 ---
 
@@ -952,9 +975,8 @@ Items marked **(blocks M4)** / **(blocks M5)** gate those milestones only;
 M0–M3 can proceed regardless.
 
 **Control host**
-1. Where will the CLI run in production (operator workstation? always-on
-   Linux box? the AI server itself)? Must reach server and device via SSH.
-2. OS/Python there; is `rsync` available?
+1. ~~Where will the CLI run in production?~~ **Resolved: the AI server.**
+2. OS/Python on the AI server; is `rsync` available? (merged into item 3)
 
 **AI server (blocks M4)**
 3. OS, Python version, GPU model(s), driver/CUDA version, free disk.
@@ -990,12 +1012,29 @@ M0–M3 can proceed regardless.
     (AGPL-3.0 / enterprise) is acceptable for this project.
 19. Confirm that tiny real sample JPEGs may be committed for smoke tests.
 
+**AI Server → NG4511 link (added at review; verify during M4/M5)**
+20. Which Linux user on the AI server performs the SSH to the NG4511, and which
+    remote user it logs in as.
+21. Whether that remote user has write permission to the deployment root
+    (`/opt/camthink-ai`) and may control the inference service.
+22. Whether passwordless `sudo` is available on the NG4511, and whether it is
+    needed (it may be avoidable with a user-owned install root and a
+    `systemd --user` service).
+23. NG4511 hostname/IP strategy (static IP, DHCP reservation, mDNS
+    `*.local`, or an `~/.ssh/config` alias) — the alias is what
+    `infrastructure.yaml` will reference.
+24. SSH host-key verification strategy: pinned entry in `known_hosts`
+    (preferred), `StrictHostKeyChecking=accept-new`, or disabled (rejected).
+25. Transfer method to the device: `rsync` (if installed on the NG4511) or
+    `scp`/`sftp`; `Host.upload` hides the choice.
+
 ---
 
 ## 26. Explicitly stated assumptions
 
-- **A1.** Push-based topology: the control host initiates all SSH connections;
-  server and device never need to reach the control host.
+- **A1.** Push-based topology: the AI server (control + compute host)
+  initiates all SSH connections to the device; the device never needs to reach
+  the server. (Confirmed at review.)
 - **A2.** One AI server and one device in V1; names in `infrastructure.yaml`
   already allow more.
 - **A3.** YOLO-family via ultralytics is acceptable as the single V1 provider.
