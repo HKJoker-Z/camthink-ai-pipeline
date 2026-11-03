@@ -63,7 +63,9 @@ def project_status(project: Project) -> dict[str, Any]:
         ),
         "active_runs": active_runs,
         "model_states": model_states,
+        "deployment_states": {d["deployment_id"]: d["state"] for d in store.list("deployments")},
     }
+    deployment_states = summary["deployment_states"]
     summary["next_operations"] = next_operations(
         project.name,
         counts,
@@ -71,6 +73,10 @@ def project_status(project: Project) -> dict[str, Any]:
         active_runs,
         model_states=model_states,
         unregistered_train_runs=completed_train_unregistered,
+        exported_models={
+            e["model_version"] for e in store.list("exports") if e.get("state") == "READY"
+        },
+        deployment_states=deployment_states,
     )
     return summary
 
@@ -83,9 +89,21 @@ def next_operations(
     *,
     model_states: dict[str, str] | None = None,
     unregistered_train_runs: list[str] | None = None,
+    exported_models: set[str] | None = None,
+    deployment_states: dict[str, str] | None = None,
 ) -> list[str]:
     """Suggest the operations that make sense now. Advisory only; never enforced."""
     model_states = model_states or {}
+    exported_models = exported_models or set()
+    deployment_states = deployment_states or {}
+    broken = [d for d, s in deployment_states.items() if s == "ROLLBACK_FAILED"]
+    if broken and pointers.get("active_deployment") is None:
+        # The target's live state is unknown: inspect before deploying anything else.
+        return [
+            f"health {name}",
+            f"deploy status {name} {broken[-1]}",
+            f"rollback {name} --to <dep>",
+        ]
     if active_runs:
         return [f"run status {name} {rid}" for rid in active_runs]
     if counts["imports"] == 0:
@@ -102,8 +120,13 @@ def next_operations(
     if to_evaluate:
         return [f"evaluate run {name} {mv}" for mv in to_evaluate]
     accepted = [mv for mv, s in model_states.items() if s == ModelState.ACCEPTED.value]
-    if pointers.get("selected_model_version") is None:
+    selected = pointers.get("selected_model_version")
+    if selected is None:
         if accepted:
             return [f"model select {name}"]
         return [f"train start {name}", f"model list {name}"]
-    return [f"model show {name} {pointers['selected_model_version']}", f"train start {name}"]
+    if not exported_models or selected not in exported_models:
+        return [f"export start {name}"]
+    if pointers.get("active_deployment") is None:
+        return [f"deploy start {name}"]
+    return [f"health {name}", f"deploy status {name}", f"train start {name}"]

@@ -11,7 +11,9 @@ from ai_pipeline import __version__
 from ai_pipeline.cli import (
     data_cmd,
     dataset_cmd,
+    deploy_cmd,
     evaluate_cmd,
+    export_cmd,
     label_cmd,
     model_cmd,
     project_cmd,
@@ -39,6 +41,11 @@ app.add_typer(train_cmd.app, name="train")
 app.add_typer(run_cmd.app, name="run")
 app.add_typer(evaluate_cmd.app, name="evaluate")
 app.add_typer(model_cmd.app, name="model")
+app.add_typer(export_cmd.app, name="export")
+app.add_typer(deploy_cmd.app, name="deploy")
+app.add_typer(deploy_cmd.target_app, name="target")
+app.command("rollback")(deploy_cmd.rollback_cmd)
+app.command("health")(deploy_cmd.health_cmd)
 
 
 def _version(value: bool) -> None:

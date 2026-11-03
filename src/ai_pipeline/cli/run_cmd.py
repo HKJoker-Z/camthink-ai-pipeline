@@ -34,6 +34,7 @@ def run_result(run: dict[str, Any]) -> dict[str, Any]:
         "outputs": run.get("outputs") or {},
         "model_version": run.get("model_version"),
         "label_set_id": run.get("label_set_id"),
+        "export_id": run.get("export_id"),
         "error": run.get("error"),
         "post_error": run.get("post_error"),
     }
@@ -52,6 +53,8 @@ def run_text(run: dict[str, Any]) -> str:
         lines.append(f"  model_version: {run['model_version']}")
     if run.get("label_set_id"):
         lines.append(f"  label_set_id: {run['label_set_id']}")
+    if run.get("export_id"):
+        lines.append(f"  export_id: {run['export_id']}")
     if run.get("error"):
         lines.append(f"  error: {run['error'].get('type')}: {run['error'].get('message')}")
     if run.get("post_error"):
