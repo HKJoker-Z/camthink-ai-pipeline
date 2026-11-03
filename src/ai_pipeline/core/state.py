@@ -37,26 +37,44 @@ class RunState(str, Enum):
 
 
 class ModelState(str, Enum):
+    """Model *quality* lifecycle only. Exports and deployments are separate entities
+    (ExportArtifact, Deployment) and never change a model's state."""
+
     TRAINED = "TRAINED"
     EVALUATED = "EVALUATED"
     ACCEPTED = "ACCEPTED"
     REJECTED = "REJECTED"
-    EXPORTED = "EXPORTED"
-    BENCHMARKED = "BENCHMARKED"
-    DEPLOYED = "DEPLOYED"
-    SUPERSEDED = "SUPERSEDED"
     ARCHIVED = "ARCHIVED"
 
 
-class DeploymentState(str, Enum):
-    PENDING = "PENDING"
-    UPLOADED = "UPLOADED"
-    PREPARED = "PREPARED"
-    SMOKE_PASSED = "SMOKE_PASSED"
-    BENCHMARKED = "BENCHMARKED"
-    ACTIVE = "ACTIVE"
+class ExportState(str, Enum):
+    READY = "READY"
     FAILED = "FAILED"
-    ROLLED_BACK = "ROLLED_BACK"
+
+
+class DeploymentState(str, Enum):
+    """Phase machine of one deployment attempt on one target.
+
+    Pre-activation phases fail into FAILED (or REJECTED for benchmark policy) without touching
+    the active deployment. Post-activation failures roll back automatically.
+    """
+
+    CREATED = "CREATED"
+    VERIFYING = "VERIFYING"
+    STAGING = "STAGING"
+    PREPARING = "PREPARING"
+    SMOKE_TESTING = "SMOKE_TESTING"
+    BENCHMARKING = "BENCHMARKING"
+    READY_TO_ACTIVATE = "READY_TO_ACTIVATE"
+    ACTIVATING = "ACTIVATING"
+    HEALTH_CHECKING = "HEALTH_CHECKING"
+    ACTIVE = "ACTIVE"
+    SUPERSEDED = "SUPERSEDED"  # was ACTIVE; a later deployment is now current
+    FAILED = "FAILED"  # failed before activation; active deployment untouched
+    REJECTED = "REJECTED"  # benchmark did not satisfy deployment.acceptance; not activated
+    ROLLING_BACK = "ROLLING_BACK"
+    ROLLED_BACK = "ROLLED_BACK"  # previous known-good restored (or nothing active if none)
+    ROLLBACK_FAILED = "ROLLBACK_FAILED"  # high severity: target state must be inspected
 
 
 _T = dict[Enum, frozenset[Enum]]
@@ -87,35 +105,48 @@ MODEL_TRANSITIONS: _T = {
     ModelState.EVALUATED: frozenset(
         {ModelState.ACCEPTED, ModelState.REJECTED, ModelState.ARCHIVED}
     ),
-    # Re-evaluation is allowed until the model has been exported.
+    # Re-evaluation is always allowed; exporting/deploying never blocks it.
     ModelState.REJECTED: frozenset({ModelState.EVALUATED, ModelState.ARCHIVED}),
-    ModelState.ACCEPTED: frozenset(
-        {ModelState.EVALUATED, ModelState.EXPORTED, ModelState.ARCHIVED}
-    ),
-    ModelState.EXPORTED: frozenset(
-        {ModelState.BENCHMARKED, ModelState.DEPLOYED, ModelState.ARCHIVED}
-    ),
-    ModelState.BENCHMARKED: frozenset(
-        {ModelState.DEPLOYED, ModelState.REJECTED, ModelState.ARCHIVED}
-    ),
-    ModelState.DEPLOYED: frozenset({ModelState.SUPERSEDED, ModelState.ARCHIVED}),
-    # A superseded model is redeployed on rollback.
-    ModelState.SUPERSEDED: frozenset({ModelState.DEPLOYED, ModelState.ARCHIVED}),
+    ModelState.ACCEPTED: frozenset({ModelState.EVALUATED, ModelState.ARCHIVED}),
     ModelState.ARCHIVED: frozenset(),
 }
 
+_D = DeploymentState
+_PRE_ACTIVATION_FAIL = frozenset({_D.FAILED})
 DEPLOYMENT_TRANSITIONS: _T = {
-    DeploymentState.PENDING: frozenset({DeploymentState.UPLOADED, DeploymentState.FAILED}),
-    DeploymentState.UPLOADED: frozenset({DeploymentState.PREPARED, DeploymentState.FAILED}),
-    DeploymentState.PREPARED: frozenset({DeploymentState.SMOKE_PASSED, DeploymentState.FAILED}),
-    DeploymentState.SMOKE_PASSED: frozenset(
-        {DeploymentState.BENCHMARKED, DeploymentState.ACTIVE, DeploymentState.FAILED}
-    ),
-    DeploymentState.BENCHMARKED: frozenset({DeploymentState.ACTIVE, DeploymentState.FAILED}),
-    DeploymentState.ACTIVE: frozenset({DeploymentState.ROLLED_BACK, DeploymentState.FAILED}),
-    DeploymentState.FAILED: frozenset(),
-    DeploymentState.ROLLED_BACK: frozenset(),
+    _D.CREATED: frozenset({_D.VERIFYING}) | _PRE_ACTIVATION_FAIL,
+    _D.VERIFYING: frozenset({_D.STAGING}) | _PRE_ACTIVATION_FAIL,
+    _D.STAGING: frozenset({_D.PREPARING}) | _PRE_ACTIVATION_FAIL,
+    _D.PREPARING: frozenset({_D.SMOKE_TESTING}) | _PRE_ACTIVATION_FAIL,
+    _D.SMOKE_TESTING: frozenset({_D.BENCHMARKING}) | _PRE_ACTIVATION_FAIL,
+    _D.BENCHMARKING: frozenset({_D.READY_TO_ACTIVATE, _D.REJECTED}) | _PRE_ACTIVATION_FAIL,
+    _D.READY_TO_ACTIVATE: frozenset({_D.ACTIVATING}) | _PRE_ACTIVATION_FAIL,
+    # From here on a failure means the target may have been changed: roll back.
+    _D.ACTIVATING: frozenset({_D.HEALTH_CHECKING, _D.ROLLING_BACK}),
+    _D.HEALTH_CHECKING: frozenset({_D.ACTIVE, _D.ROLLING_BACK}),
+    _D.ACTIVE: frozenset({_D.SUPERSEDED, _D.ROLLING_BACK}),
+    _D.SUPERSEDED: frozenset({_D.ACTIVE}),  # restored by a rollback
+    _D.ROLLING_BACK: frozenset({_D.ROLLED_BACK, _D.ROLLBACK_FAILED}),
+    _D.FAILED: frozenset(),
+    _D.REJECTED: frozenset(),
+    _D.ROLLED_BACK: frozenset(),
+    _D.ROLLBACK_FAILED: frozenset(),
 }
+
+PRE_ACTIVATION_STATES = frozenset(
+    {
+        _D.CREATED,
+        _D.VERIFYING,
+        _D.STAGING,
+        _D.PREPARING,
+        _D.SMOKE_TESTING,
+        _D.BENCHMARKING,
+        _D.READY_TO_ACTIVATE,
+    }
+)
+TERMINAL_DEPLOYMENT_STATES = frozenset(
+    {_D.ACTIVE, _D.SUPERSEDED, _D.FAILED, _D.REJECTED, _D.ROLLED_BACK, _D.ROLLBACK_FAILED}
+)
 
 TERMINAL_RUN_STATES = frozenset({RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED})
 

@@ -29,30 +29,66 @@ def test_terminal_states_cannot_move():
     assert err.details["allowed"] == []
 
 
-def test_model_lifecycle_paths():
+def test_model_lifecycle_is_quality_only():
     assert transition(ModelState.TRAINED, ModelState.EVALUATED, MODEL_TRANSITIONS)
     assert transition(ModelState.EVALUATED, ModelState.REJECTED, MODEL_TRANSITIONS)
-    assert transition(ModelState.SUPERSEDED, ModelState.DEPLOYED, MODEL_TRANSITIONS)  # rollback
+    # re-evaluation is always possible; export/deploy never lock a model
+    assert transition(ModelState.ACCEPTED, ModelState.EVALUATED, MODEL_TRANSITIONS)
+    assert transition(ModelState.REJECTED, ModelState.EVALUATED, MODEL_TRANSITIONS)
     with pytest.raises(StateError):
-        transition(ModelState.TRAINED, ModelState.DEPLOYED, MODEL_TRANSITIONS)
+        transition(ModelState.TRAINED, ModelState.ACCEPTED, MODEL_TRANSITIONS)
     with pytest.raises(StateError):
         transition(ModelState.REJECTED, ModelState.ACCEPTED, MODEL_TRANSITIONS)
+    assert {s.value for s in ModelState} == {
+        "TRAINED",
+        "EVALUATED",
+        "ACCEPTED",
+        "REJECTED",
+        "ARCHIVED",
+    }
 
 
-def test_deployment_can_skip_benchmark_but_not_smoke():
-    assert transition(DeploymentState.SMOKE_PASSED, DeploymentState.ACTIVE, DEPLOYMENT_TRANSITIONS)
+def test_deployment_phase_machine():
+    D = DeploymentState
+    happy = [
+        D.CREATED,
+        D.VERIFYING,
+        D.STAGING,
+        D.PREPARING,
+        D.SMOKE_TESTING,
+        D.BENCHMARKING,
+        D.READY_TO_ACTIVATE,
+        D.ACTIVATING,
+        D.HEALTH_CHECKING,
+        D.ACTIVE,
+    ]
+    for a, b in zip(happy, happy[1:], strict=False):
+        assert transition(a, b, DEPLOYMENT_TRANSITIONS) is b
+    # pre-activation phases fail into FAILED, never ROLLING_BACK
+    for s in happy[:7]:
+        assert transition(s, D.FAILED, DEPLOYMENT_TRANSITIONS)
+        with pytest.raises(StateError):
+            transition(s, D.ROLLING_BACK, DEPLOYMENT_TRANSITIONS)
+    assert transition(D.BENCHMARKING, D.REJECTED, DEPLOYMENT_TRANSITIONS)
+    # post-activation failures roll back, never plain FAILED
+    for s in (D.ACTIVATING, D.HEALTH_CHECKING):
+        assert transition(s, D.ROLLING_BACK, DEPLOYMENT_TRANSITIONS)
+        with pytest.raises(StateError):
+            transition(s, D.FAILED, DEPLOYMENT_TRANSITIONS)
+    assert transition(D.ROLLING_BACK, D.ROLLED_BACK, DEPLOYMENT_TRANSITIONS)
+    assert transition(D.ROLLING_BACK, D.ROLLBACK_FAILED, DEPLOYMENT_TRANSITIONS)
+    assert transition(D.ACTIVE, D.SUPERSEDED, DEPLOYMENT_TRANSITIONS)
+    assert transition(D.SUPERSEDED, D.ACTIVE, DEPLOYMENT_TRANSITIONS)
     with pytest.raises(StateError):
-        transition(DeploymentState.PREPARED, DeploymentState.ACTIVE, DEPLOYMENT_TRANSITIONS)
+        transition(D.PREPARING, D.ACTIVE, DEPLOYMENT_TRANSITIONS)
+    for terminal in (D.FAILED, D.REJECTED, D.ROLLED_BACK, D.ROLLBACK_FAILED):
+        assert DEPLOYMENT_TRANSITIONS[terminal] == frozenset()
 
 
-def test_every_non_terminal_state_can_fail_or_finish():
-    for table, failed in (
-        (RUN_TRANSITIONS, RunState.FAILED),
-        (DEPLOYMENT_TRANSITIONS, DeploymentState.FAILED),
-    ):
-        for state, allowed in table.items():
-            if allowed:
-                assert failed in allowed, f"{state} must be able to reach {failed}"
+def test_every_non_terminal_run_state_can_fail():
+    for state, allowed in RUN_TRANSITIONS.items():
+        if allowed:
+            assert RunState.FAILED in allowed, f"{state} must be able to reach FAILED"
 
 
 def test_unknown_state_is_reported():

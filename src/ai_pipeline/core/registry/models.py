@@ -1,10 +1,13 @@
 """Model versions (``artifacts/<p>/models/<mv>.json``).
 
 A model version is created from a COMPLETED train run and references — never copies — the
-run's artifacts. Lifecycle (``core.state.MODEL_TRANSITIONS``)::
+run's artifacts. Its lifecycle is about model *quality* only (``core.state.MODEL_TRANSITIONS``)::
 
-    TRAINED → EVALUATED → ACCEPTED | REJECTED   (re-evaluation allowed until EXPORTED)
-    ACCEPTED → EXPORTED → BENCHMARKED → DEPLOYED → SUPERSEDED        (M3+)
+    TRAINED → EVALUATED → ACCEPTED | REJECTED   (re-evaluation always allowed)
+
+Exports (``exports/exp-NNN``) and deployments (``deployments/dep-NNN``) are separate entities
+that reference a model version; the model keeps ``exports`` / ``deployments`` id lists for
+traceability but its state never changes because of them.
 """
 
 from __future__ import annotations
@@ -98,6 +101,8 @@ def register_from_run(project: Project, run: dict[str, Any]) -> tuple[dict[str, 
         },
         "metrics": {"train": run.get("metrics") or {}, "eval": None},
         "evaluation": None,
+        "exports": [],
+        "deployments": [],
         "history": [],
     }
     _history(record, ModelState.TRAINED, f"registered from run {run['run_id']}")
@@ -160,14 +165,9 @@ def list_models(project: Project) -> list[dict[str, Any]]:
 
 
 def select_model(project: Project, model_version: str | None) -> dict[str, Any]:
-    """Explicit selection must be ACCEPTED (or later); implicit selection picks the ACCEPTED
-    model with the highest ``evaluation.selection.primary_metric``."""
-    selectable = {
-        ModelState.ACCEPTED.value,
-        ModelState.EXPORTED.value,
-        ModelState.BENCHMARKED.value,
-        ModelState.DEPLOYED.value,
-    }
+    """Explicit selection must be ACCEPTED; implicit selection picks the ACCEPTED model with
+    the highest ``evaluation.selection.primary_metric``."""
+    selectable = {ModelState.ACCEPTED.value}
     if model_version is not None:
         record = project.store.read("models", model_version)
         if record["state"] not in selectable:
@@ -195,3 +195,13 @@ def select_model(project: Project, model_version: str | None) -> dict[str, Any]:
         record = max(candidates, key=lambda r: (r["metrics"]["eval"][metric], r["model_version"]))
     project.set_pointer("selected_model_version", record["model_version"])
     return record
+
+
+def link_model(project: Project, model_version: str, field: str, entity_id: str) -> None:
+    """Append an export/deployment id to the model's traceability list (idempotent)."""
+    record = project.store.read("models", model_version)
+    ids = record.setdefault(field, [])
+    if entity_id not in ids:
+        ids.append(entity_id)
+        record["updated_at"] = utc_now_iso()
+        project.store.write("models", model_version, record)
