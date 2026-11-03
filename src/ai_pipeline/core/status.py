@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ai_pipeline.core.data.assets import AssetStore
 from ai_pipeline.core.project import Project
 from ai_pipeline.core.state import TERMINAL_RUN_STATES, RunState
 from ai_pipeline.core.store import KINDS
@@ -17,6 +18,7 @@ def project_status(project: Project) -> dict[str, Any]:
     store = project.store
     record = project.record()
     counts = {kind: store.count(kind) for kind in KINDS}
+    counts["assets"] = AssetStore(project.artifact_dir / "assets").count()
     pointers = project.pointers()
 
     runs = store.list("runs")
@@ -61,8 +63,8 @@ def next_operations(
     if counts["imports"] == 0:
         return [f"data import {name} <path>"]
     if counts["labels"] == 0:
-        return [f"label auto {name}", f"label import {name} <path>"]
-    if counts["datasets"] == 0:
+        return [f"label import {name} <path>"]
+    if pointers.get("current_dataset_version") is None:
         return [f"dataset validate {name}", f"dataset build {name}"]
     if counts["runs"] == 0:
         return [f"train start {name}"]

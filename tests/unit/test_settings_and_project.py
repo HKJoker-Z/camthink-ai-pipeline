@@ -144,7 +144,7 @@ def test_project_status_fresh(settings: Settings):
     s = project_status(p)
     assert s["project"] == "demo_e"
     assert s["counts"] == {
-        k: 0 for k in ("imports", "labels", "datasets", "runs", "models", "deployments")
+        k: 0 for k in ("imports", "labels", "datasets", "runs", "models", "deployments", "assets")
     }
     assert s["latest_run"] is None
     assert s["next_operations"] == ["data import demo_e <path>"]
@@ -168,14 +168,16 @@ def test_project_status_reflects_runs(settings: Settings):
 
 def test_next_operations_progression():
     zero = {k: 0 for k in ("imports", "labels", "datasets", "runs", "models", "deployments")}
-    ptr = {"selected_model_version": None, "active_deployment": None}
+    ptr = {
+        "current_dataset_version": "ds-v001",
+        "selected_model_version": None,
+        "active_deployment": None,
+    }
     assert next_operations("p", zero, ptr, []) == ["data import p <path>"]
-    assert next_operations("p", {**zero, "imports": 1}, ptr, []) == [
-        "label auto p",
-        "label import p <path>",
-    ]
+    assert next_operations("p", {**zero, "imports": 1}, ptr, []) == ["label import p <path>"]
+    no_ds = {**ptr, "current_dataset_version": None}
     assert (
-        next_operations("p", {**zero, "imports": 1, "labels": 1}, ptr, [])[0]
+        next_operations("p", {**zero, "imports": 1, "labels": 1}, no_ds, [])[0]
         == "dataset validate p"
     )
     full = {k: 1 for k in zero}
@@ -185,5 +187,5 @@ def test_next_operations_progression():
         "deploy run p",
     ]
     assert "health p" in next_operations(
-        "p", full, {"selected_model_version": "mv", "active_deployment": "d"}, []
+        "p", full, {**ptr, "selected_model_version": "mv", "active_deployment": "d"}, []
     )
