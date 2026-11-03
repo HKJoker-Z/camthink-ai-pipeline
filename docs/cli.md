@@ -62,9 +62,20 @@ Logs always go to **stderr**; stdout carries only the command's output.
 Run commands return `status: failed` with the run record in `result` when the run itself
 FAILED/CANCELLED, so the agent gets the error, timestamps and log pointer in one call.
 
-Planned command groups (`export`, `target`, `benchmark`, `deploy`, `rollback`, `health`) are
-specified in [design/v1-architecture-proposal.md §13](design/v1-architecture-proposal.md) and
-are added milestone by milestone.
+### Export and deployment (M3) — see [deployment.md](deployment.md)
+
+| Command | Effect | Typical exit codes |
+|---|---|---|
+| `export start <name> [<mv>] [--backend b] [--rerun] [--wait]` | export job → immutable `exp-NNN`; reuses an identical READY export unless `--rerun` | 0, 1 (`RUN_FAILED`), 3 (`NO_SELECTED_MODEL`, `MODEL_NOT_FOUND`) |
+| `export status <name> <run_id>` / `export list <name>` / `export show <name> <exp>` | run alias / listing / full record | 0, 3 |
+| `target verify <name> [--target t]` | reachability + environment of the target | 0, 1 (`TARGET_NOT_IMPLEMENTED`) |
+| `deploy start <name> [<mv>] [--export exp] [--target t]` | verify → stage → prepare → smoke → benchmark → policy → activate → health; synchronous, every phase persisted | 0 ACTIVE, 5 `POLICY_REJECTED`, 1 `DEPLOYMENT_FAILED` / `DEPLOYMENT_ROLLED_BACK` / `DEPLOYMENT_ROLLBACK_FAILED`, 3 preconditions (`NO_EXPORT`, `MODEL_REJECTED`, `MODEL_NOT_ACCEPTED`) |
+| `deploy status <name> [<dep>] [--full]` / `deploy list <name>` | inspect deployments (default: active) | 0 |
+| `rollback <name> [--to dep]` | restore the previous known-good deployment; `--to` is also the recovery path after `ROLLBACK_FAILED` | 0, 3 (`NO_ACTIVE_DEPLOYMENT`, `NO_PREVIOUS_DEPLOYMENT`), 1 |
+| `health <name> [--target t]` | target health + consistency with `active_deployment` | 0, 1 (`UNHEALTHY`, `POINTER_MISMATCH`) |
+
+Deployment commands return the deployment summary in `result` for every outcome, so the
+verdicts (`acceptance`, `rollback`, `error.phase`) are readable without logs.
 
 ## JSON envelope
 

@@ -123,6 +123,7 @@ CREATED ──submit──▶ SUBMITTED ──runner starts──▶ RUNNING ─
 | `train` | `core.registry.register_from_run` | `ModelVersion` in state `TRAINED`, `run.model_version` set |
 | `evaluate` | `core.registry.apply_evaluation` | model `metrics.eval`, `evaluation.acceptance`, state `EVALUATED → ACCEPTED \| REJECTED` |
 | `autolabel` | `runs._autolabel_to_label_set` | new label set with `source.kind = model`, `run.label_set_id` set |
+| `export` | `core.exports.export_from_run` | immutable `ExportArtifact` (`exp-NNN`), `run.export_id` set — see [deployment.md](deployment.md) |
 
 Hooks are idempotent (`post_processed`); a hook failure leaves the run COMPLETED with
 `post_error` and exit code 1 (`RUN_POST_PROCESS_FAILED`); the next sync retries it.
@@ -140,6 +141,7 @@ Hooks are idempotent (`post_processed`); a hook failure leaves the run COMPLETED
   "metrics": {"train": {...}, "eval": {"precision": …, "recall": …, "mAP50": …, "mAP50-95": …, "split": "test"}},
   "evaluation": {"run_id": "run-…", "dataset_version": "ds-v001", "split": "test", "at": "…",
                  "acceptance": {"passed": true, "checks": [{"metric": "mAP50", "value": 0.75, "rule": {"min": 0.3}, "passed": true}]}},
+  "exports": ["exp-001"], "deployments": ["dep-001", "dep-002"],
   "history": [{"at": "…", "state": "TRAINED", "note": "registered from run run-…"},
               {"at": "…", "state": "EVALUATED", "note": "evaluated by run run-…"},
               {"at": "…", "state": "ACCEPTED", "note": "all acceptance rules passed"}],
@@ -148,17 +150,19 @@ Hooks are idempotent (`post_processed`); a hook failure leaves the run COMPLETED
 ```
 
 Artifacts are referenced (path + sha256), never copied: the training run directory is the
-storage. Lifecycle (`core.state.MODEL_TRANSITIONS`):
+storage. Lifecycle (`core.state.MODEL_TRANSITIONS`) concerns model *quality* only:
 
 ```
-TRAINED → EVALUATED → ACCEPTED | REJECTED      (re-evaluation allowed until EXPORTED)
-ACCEPTED → EXPORTED → BENCHMARKED → DEPLOYED → SUPERSEDED            (M3+)
+TRAINED → EVALUATED → ACCEPTED | REJECTED      (re-evaluation always allowed)
 any → ARCHIVED
 ```
 
-`model select [<mv>]`: explicit selection requires an accepted model; implicit selection picks
+Exports and deployments are separate entities; the model record only lists their ids
+(`exports`, `deployments`). See [deployment.md](deployment.md).
+
+`model select [<mv>]`: explicit selection requires an `ACCEPTED` model; implicit selection picks
 the accepted model with the highest `evaluation.selection.primary_metric`. Sets the project
-pointer `selected_model_version`.
+pointer `selected_model_version`, which `export start` and `deploy start` use by default.
 
 ## Evaluation policy
 
@@ -189,10 +193,10 @@ Nothing is built or merged: the new set is simply the latest READY label set, so
 
 | name | module | notes |
 |---|---|---|
-| `fake` | `ai_pipeline.providers.fake` | deterministic; `provider_args.fake_metrics / fake_fail / fake_sleep_s` for tests |
-| `ultralytics` | `ai_pipeline.providers.ultralytics` | YOLO; writes a job-local `data.resolved.yaml` with an absolute dataset path because ultralytics resolves `path:` against the CWD; falls back to CPU when CUDA is unavailable |
+| `fake` | `ai_pipeline.providers.fake` | deterministic; `provider_args.fake_metrics / fake_fail / fake_sleep_s` for tests; `export` writes a fake `model.onnx` |
+| `ultralytics` | `ai_pipeline.providers.ultralytics` | YOLO; writes a job-local `data.resolved.yaml` with an absolute dataset path because ultralytics resolves `path:` against the CWD; falls back to CPU when CUDA is unavailable; `export` works on a job-local copy of the weights |
 
 Install the ultralytics extra only in the job interpreter:
 `pip install -e '.[provider-ultralytics]'` and point `compute_backends.local.python` at it.
 The opt-in integration test `pytest -m slow tests/integration` (with `AIP_ML_PYTHON=<that
-python>`) runs train → evaluate → autolabel through the real provider on CPU.
+python>`) runs train → evaluate → autolabel → ONNX export through the real provider on CPU.

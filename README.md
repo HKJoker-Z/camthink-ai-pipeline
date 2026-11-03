@@ -15,10 +15,12 @@ Human / automation agent
 The pipeline is generic: projects are configuration (`projects/<name>/project.yaml`), the
 core knows about datasets, runs, models, deployments — never about specific object classes.
 
-**Status:** M2 — project creation and validation (M0); immutable content-addressed assets,
+**Status:** M3 — project creation and validation (M0); immutable content-addressed assets,
 canonical annotations, deterministic dataset versions (M1); jobs executed by a compute backend
 through a model provider, run tracking, auto-labeling, evaluation with project-defined
-acceptance, and a simple model registry (M2). Export, benchmark and deployment land in M3+. See
+acceptance, model registry (M2); ONNX export as a job, first-class deployments with benchmark
+policy, activation, automatic rollback and a fake target (M3). Real AI-server and NG4511
+integration are M4/M5. See
 [`docs/design/v1-architecture-proposal.md`](docs/design/v1-architecture-proposal.md).
 
 ## Install
@@ -47,6 +49,10 @@ ai-pipeline train start my_detector --wait      # job on the compute backend -> 
 ai-pipeline evaluate run my_detector mv-001 --wait   # metrics + acceptance -> ACCEPTED/REJECTED
 ai-pipeline model select my_detector            # best accepted by evaluation.selection
 ai-pipeline label auto my_detector --wait       # pretrained model -> new label set (kind: model)
+ai-pipeline export start my_detector --wait     # export job -> exp-001 (ONNX)
+ai-pipeline deploy start my_detector            # stage/prepare/smoke/benchmark/policy/activate/health
+ai-pipeline health my_detector                  # target health vs active deployment
+ai-pipeline rollback my_detector                # restore previous known-good deployment
 ai-pipeline status my_detector                  # pointers, counts, next valid operations
 ai-pipeline -o json status my_detector          # machine-readable envelope
 ```
@@ -61,6 +67,7 @@ projects refer to. Generated state lives under `artifacts/` (gitignored).
 - [docs/cli.md](docs/cli.md) — commands, JSON envelope, exit codes
 - [docs/datasets.md](docs/datasets.md) — asset store, annotation schema, validation rules, split and hash
 - [docs/runs-and-models.md](docs/runs-and-models.md) — jobs, backends, providers, runs, registry, evaluation policy
+- [docs/deployment.md](docs/deployment.md) — exports, deployment targets, deployment state machine, rollback
 - [docs/design/v1-architecture-proposal.md](docs/design/v1-architecture-proposal.md) — full design, milestones, open items
 
 ## Development

@@ -13,6 +13,12 @@ Status: **ACCEPTED for M0 (2026-11-03) with the topology decision below.**
   `infrastructure.yaml` simply uses the `local` compute backend. The `ssh`
   backend remains a supported type for a future split.
 - Additional M4/M5 verification items were added (§25, items 20–25).
+- **M3 review (2026-11-03):** export is *not* a ModelVersion state. The model lifecycle is
+  `TRAINED → EVALUATED → ACCEPTED | REJECTED` only; exports are immutable `ExportArtifact`
+  entities produced by compute jobs, deployments are first-class entities with their own
+  phase machine, and the TensorRT engine is target-owned (recorded on the Deployment). This
+  supersedes the `EXPORTED/BENCHMARKED/DEPLOYED/SUPERSEDED` model states in §11.1/§12 and
+  §16 of the brief. See `docs/deployment.md`.
 
 ```
 Human / future Grok Bot

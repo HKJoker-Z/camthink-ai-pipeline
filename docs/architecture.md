@@ -75,9 +75,18 @@ directly.
 | `providers.fake` | deterministic provider for tests |
 | `providers.ultralytics` | YOLO train/val/predict → task metric names; imported only inside the runner |
 
+## Export and deployment modules (M3) — details in [deployment.md](deployment.md)
+
+| Module | Responsibility |
+|---|---|
+| `core.exports` | `start_export` (export job, request-identity reuse), `export_from_run` hook → immutable `exp-NNN` |
+| `core.deployment` | deployment entity + phase machine, benchmark policy, activation, automatic/manual rollback, recovery, health |
+| `targets.base` | `DeploymentTarget` protocol (verify, stage, prepare, smoke_test, benchmark, activate, health_check, rollback) |
+| `targets.fake` | directory-based target with atomic `current` symlink and `inject.json` failure injection |
+
 Seam status: `ComputeBackend` has `local` (production for V1, where control host == compute
-host) and a schema slot for `ssh` (M4). `DeploymentTarget` is defined in the design only until
-M3.
+host) and a schema slot for `ssh` (M4). `DeploymentTarget` has `fake`; `camthink_ng4511` is a
+schema slot until M5.
 
 ## Filesystem layout at runtime
 
@@ -91,6 +100,7 @@ artifacts/<name>/labels/<id>/annotations.jsonl
 artifacts/<name>/datasets/<ds_version>/     immutable materialised dataset
 artifacts/<name>/runs/<run_id>/             job dir: job.json, status.json, runner.log, out/
 artifacts/<name>/logs/
+.fake-target/                               fake device: deployments/<dep>/, current -> …
 ```
 
 The artifact root is configurable (`artifact_root` in `infrastructure.yaml`,
@@ -107,6 +117,11 @@ last, so a crash never leaves an ambiguous record.
 ```
 Run         CREATED → SUBMITTED → RUNNING → COMPLETED | FAILED | CANCELLED
 Dataset     BUILDING → READY | FAILED
-Model       TRAINED → EVALUATED → ACCEPTED | REJECTED → EXPORTED → BENCHMARKED → DEPLOYED → SUPERSEDED
-Deployment  PENDING → UPLOADED → PREPARED → SMOKE_PASSED → BENCHMARKED → ACTIVE | FAILED | ROLLED_BACK
+Model       TRAINED → EVALUATED → ACCEPTED | REJECTED          (quality only; re-evaluable)
+Export      READY | FAILED                                     (immutable artifact)
+Deployment  CREATED → VERIFYING → STAGING → PREPARING → SMOKE_TESTING → BENCHMARKING
+            → READY_TO_ACTIVATE → ACTIVATING → HEALTH_CHECKING → ACTIVE
+            pre-activation error → FAILED; policy → REJECTED;
+            post-activation error → ROLLING_BACK → ROLLED_BACK | ROLLBACK_FAILED;
+            ACTIVE ↔ SUPERSEDED
 ```
