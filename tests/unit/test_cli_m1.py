@@ -42,7 +42,7 @@ def test_full_m1_flow_json(workspace: Path, tmp_path: Path):
     r, p = invoke_json("data", "import", "demo", str(src))
     assert r.exit_code == 0, p
     assert p["result"]["counts"]["images_new"] == 10 and p["result"]["total_assets"] == 10
-    assert p["next_operations"] == ["label import demo <path>"]
+    assert p["next_operations"] == ["label import demo <path>", "label auto demo"]
     import_id = p["result"]["import_id"]
 
     r, p = invoke_json("data", "import", "demo", str(src))

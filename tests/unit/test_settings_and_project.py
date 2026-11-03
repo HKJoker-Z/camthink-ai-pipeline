@@ -163,7 +163,7 @@ def test_project_status_reflects_runs(settings: Settings):
     s = project_status(p)
     assert s["active_runs"] == ["run-1"]
     assert s["latest_run"]["run_id"] == "run-1"
-    assert s["next_operations"] == ["train status demo_f run-1"]
+    assert s["next_operations"] == ["run status demo_f run-1"]
 
 
 def test_next_operations_progression():
@@ -174,18 +174,34 @@ def test_next_operations_progression():
         "active_deployment": None,
     }
     assert next_operations("p", zero, ptr, []) == ["data import p <path>"]
-    assert next_operations("p", {**zero, "imports": 1}, ptr, []) == ["label import p <path>"]
+    assert next_operations("p", {**zero, "imports": 1}, ptr, []) == [
+        "label import p <path>",
+        "label auto p",
+    ]
     no_ds = {**ptr, "current_dataset_version": None}
     assert (
         next_operations("p", {**zero, "imports": 1, "labels": 1}, no_ds, [])[0]
         == "dataset validate p"
     )
-    full = {k: 1 for k in zero}
-    assert next_operations("p", full, ptr, []) == ["model select p"]
-    assert next_operations("p", full, {**ptr, "selected_model_version": "mv"}, []) == [
-        "export run p",
-        "deploy run p",
+    with_ds = {**zero, "imports": 1, "labels": 1}
+    assert next_operations("p", with_ds, ptr, []) == ["train start p"]
+    assert next_operations("p", with_ds, ptr, [], unregistered_train_runs=["run-1"]) == [
+        "model register p run-1"
     ]
-    assert "health p" in next_operations(
-        "p", full, {**ptr, "selected_model_version": "mv", "active_deployment": "d"}, []
-    )
+    full = {**with_ds, "runs": 1, "models": 1}
+    assert next_operations("p", full, ptr, [], model_states={"mv-001": "TRAINED"}) == [
+        "evaluate run p mv-001"
+    ]
+    assert next_operations("p", full, ptr, [], model_states={"mv-001": "REJECTED"}) == [
+        "train start p",
+        "model list p",
+    ]
+    assert next_operations("p", full, ptr, [], model_states={"mv-001": "ACCEPTED"}) == [
+        "model select p"
+    ]
+    selected = {**ptr, "selected_model_version": "mv-001"}
+    assert next_operations("p", full, selected, [], model_states={"mv-001": "ACCEPTED"}) == [
+        "model show p mv-001",
+        "train start p",
+    ]
+    assert next_operations("p", full, selected, ["run-9"]) == ["run status p run-9"]
