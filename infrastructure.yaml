@@ -7,11 +7,12 @@ projects_root: ./projects
 artifact_root: ./artifacts
 
 compute_backends:
-  # Jobs run on this machine (the AI server). Interpreter must have the
-  # `provider-ultralytics` extra installed (from M2 on).
+  # Jobs run on this machine (the AI server) as detached subprocesses.
+  # `python` = interpreter with the `provider-ultralytics` extra installed;
+  # omit it to use the same interpreter that runs the CLI.
   local:
     type: local
-    python: python
+    # python: /data/venvs/aip-ml/bin/python
 
 deployment_targets:
   # Local stand-in for a device; used by tests and dry runs.

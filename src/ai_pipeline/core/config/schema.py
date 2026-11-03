@@ -239,7 +239,9 @@ class ProjectConfig(_Strict):
 
 class LocalBackendConfig(_Strict):
     type: Literal["local"]
-    python: str = "python"
+    # Interpreter used to run jobs; it must have the provider extra installed.
+    # None = the interpreter running the CLI (fine when control host == compute host).
+    python: str | None = None
 
 
 class SshBackendConfig(_Strict):
