@@ -1,0 +1,41 @@
+# Secrets
+.env
+*.pem
+id_rsa*
+id_ed25519*
+
+# Generated pipeline state and artifacts (configurable root, default ./artifacts)
+artifacts/
+.fake-target/
+
+# Per-project data is never committed; project.yaml is.
+projects/*/data/
+
+# Model weights, exports, engines, training caches
+*.pt
+*.pth
+*.onnx
+*.engine
+*.plan
+*.trt
+runs/
+wandb/
+*.cache
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Logs and temp
+*.log
+*.tmp
+.DS_Store

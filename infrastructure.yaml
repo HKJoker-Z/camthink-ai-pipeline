@@ -1,0 +1,29 @@
+# Infrastructure for the V1 topology: the AI server is both control host and
+# compute host; the NG4511 is a deployment target reached over passwordless SSH.
+# No secrets here. Use ${ENV_VAR} to pull sensitive values from the environment.
+schema_version: 1
+
+projects_root: ./projects
+artifact_root: ./artifacts
+
+compute_backends:
+  # Jobs run on this machine (the AI server). Interpreter must have the
+  # `provider-ultralytics` extra installed (from M2 on).
+  local:
+    type: local
+    python: python
+
+deployment_targets:
+  # Local stand-in for a device; used by tests and dry runs.
+  fake:
+    type: fake
+    root: ./.fake-target
+
+  # CamThink NeoEdge NG4511. `ssh_host` is an alias from ~/.ssh/config
+  # (hostname/IP, user, key, and host-key pinning live there).
+  ng4511-lab:
+    type: camthink_ng4511
+    ssh_host: ng4511
+    install_root: /opt/camthink-ai
+    service_name: camthink-ai-inference
+    inference_source: "${NG4511_RTSP_URL:-}"
