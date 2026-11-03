@@ -27,6 +27,12 @@ autolabel
               confidence}
              metrics {images, detections}
 
+export
+    inputs : weights, format ("onnx")
+    params : opset, image_size, dynamic, classes [..], provider_args {}
+    returns: artifacts {model}  — the exported file inside out/ (e.g. out/model.onnx)
+             extra {...}        — exporter details (library version, input shape, ...)
+
 Metric names in ``metrics`` must be the task module's canonical names (object detection:
 precision, recall, f1, mAP50, mAP50-95); mapping from library-specific names is the
 provider's job.
@@ -53,6 +59,10 @@ class ModelProvider(Protocol):
     ) -> dict[str, Any]: ...
 
     def autolabel(
+        self, ctx: JobContext, *, inputs: dict[str, Any], params: dict[str, Any]
+    ) -> dict[str, Any]: ...
+
+    def export(
         self, ctx: JobContext, *, inputs: dict[str, Any], params: dict[str, Any]
     ) -> dict[str, Any]: ...
 

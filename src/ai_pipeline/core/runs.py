@@ -16,6 +16,7 @@ output into pipeline records:
     train     → ModelVersion (TRAINED)              core.registry.register_from_run
     evaluate  → ModelVersion metrics + acceptance   core.registry.apply_evaluation
     autolabel → LabelSet (source.kind = model)      _autolabel_to_label_set
+    export    → ExportArtifact (READY)              core.exports.export_from_run
 
 Hooks are idempotent (``post_processed`` flag) and a hook failure leaves the run COMPLETED with
 ``post_error`` set so it can be retried.
@@ -127,6 +128,7 @@ def create_run(
         "error": None,
         "model_version": None,
         "label_set_id": None,
+        "export_id": None,
         "post_processed": False,
         "post_error": None,
     }
@@ -438,6 +440,7 @@ def list_runs(project: Project, kind: str | None = None) -> list[dict[str, Any]]
                 "dataset_version": (r.get("inputs") or {}).get("dataset_version"),
                 "model_version": r.get("model_version"),
                 "label_set_id": r.get("label_set_id"),
+                "export_id": r.get("export_id"),
                 "created": r["timestamps"]["created"],
                 "finished": r["timestamps"]["finished"],
             }
@@ -468,6 +471,10 @@ def _post_process(project: Project, run: dict[str, Any]) -> None:
             )
         elif run["kind"] == "autolabel":
             _autolabel_to_label_set(project, run)
+        elif run["kind"] == "export":
+            from ai_pipeline.core.exports import export_from_run
+
+            export_from_run(project, run)
         run["post_processed"] = True
         run["post_error"] = None
     except Exception as exc:

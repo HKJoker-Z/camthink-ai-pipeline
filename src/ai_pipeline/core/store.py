@@ -25,7 +25,7 @@ from typing import Any
 
 from ai_pipeline.core.errors import AlreadyExistsError, NotFoundError
 
-KINDS = ("imports", "labels", "datasets", "runs", "models", "deployments")
+KINDS = ("imports", "labels", "datasets", "runs", "models", "exports", "deployments")
 PROJECT_RECORD = "project.json"
 
 
@@ -37,6 +37,7 @@ def write_json_atomic(path: Path, data: Any) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2, sort_keys=True, ensure_ascii=False)
             fh.write("\n")
+        os.chmod(tmp, 0o644)  # mkstemp creates 0600; records are not secrets
         os.replace(tmp, path)
     except BaseException:
         try:

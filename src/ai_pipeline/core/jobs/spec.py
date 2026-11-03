@@ -22,8 +22,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from ai_pipeline.core.store import read_json, write_json_atomic
 
 JOB_SCHEMA_VERSION = 1
-JOB_KINDS = ("autolabel", "train", "evaluate")
-JobKind = Literal["autolabel", "train", "evaluate"]
+JOB_KINDS = ("autolabel", "train", "evaluate", "export")
+JobKind = Literal["autolabel", "train", "evaluate", "export"]
 
 SPEC_FILE = "job.json"
 STATUS_FILE = "status.json"

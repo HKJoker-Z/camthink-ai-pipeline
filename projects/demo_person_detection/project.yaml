@@ -55,6 +55,7 @@ export:
   opset: 17
   image_size: 640
   dynamic: false
+  provider_args: {}
 
 deployment:
   target: fake                      # switch to ng4511-lab for the real device

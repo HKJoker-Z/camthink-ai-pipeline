@@ -74,6 +74,8 @@ def execute(spec: JobSpec, ctx: JobContext, provider) -> JobResult:
         out = provider.evaluate(ctx, inputs=spec.inputs, params=spec.params)
     elif kind == "autolabel":
         out = provider.autolabel(ctx, inputs=spec.inputs, params=spec.params)
+    elif kind == "export":
+        out = provider.export(ctx, inputs=spec.inputs, params=spec.params)
     else:  # pragma: no cover - JobSpec validation prevents this
         raise ValueError(f"unknown job kind {kind!r}")
     return JobResult(

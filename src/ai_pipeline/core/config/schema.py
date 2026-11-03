@@ -192,6 +192,7 @@ class ExportConfig(_Strict):
     opset: int = Field(default=17, ge=11)
     image_size: int = Field(default=640, ge=32)
     dynamic: bool = False
+    provider_args: dict[str, Any] = Field(default_factory=dict)
 
 
 class HealthConfig(_Strict):

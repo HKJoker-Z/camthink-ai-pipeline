@@ -107,6 +107,33 @@ class FakeProvider:
         metrics_file.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
         return {"artifacts": {"metrics": ctx.relpath(metrics_file)}, "metrics": metrics}
 
+    def export(
+        self, ctx: JobContext, *, inputs: dict[str, Any], params: dict[str, Any]
+    ) -> dict[str, Any]:
+        args = self._args(params)
+        self._maybe_fail(args, "export")
+        self._maybe_sleep(args)
+        weights = ctx.resolve(inputs["weights"])
+        if not weights.is_file():
+            raise FileNotFoundError(f"weights not found: {weights}")
+        fmt = inputs.get("format", "onnx")
+        if fmt != "onnx":
+            raise ValueError(f"fake provider only exports onnx, not {fmt!r}")
+        payload = {
+            "fake_onnx": True,
+            "source_weights_sha256": hashlib.sha256(weights.read_bytes()).hexdigest(),
+            "opset": params.get("opset"),
+            "image_size": params.get("image_size"),
+            "dynamic": params.get("dynamic", False),
+        }
+        out = ctx.out_dir / "model.onnx"
+        out.write_text(json.dumps(payload, sort_keys=True, indent=2), encoding="utf-8")
+        size = params.get("image_size")
+        return {
+            "artifacts": {"model": ctx.relpath(out)},
+            "extra": {"exporter": "fake", "input_shape": [1, 3, size, size]},
+        }
+
     def autolabel(
         self, ctx: JobContext, *, inputs: dict[str, Any], params: dict[str, Any]
     ) -> dict[str, Any]:

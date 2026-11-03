@@ -181,6 +181,50 @@ class UltralyticsProvider:
         metrics_file.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
         return {"artifacts": {"metrics": ctx.relpath(metrics_file)}, "metrics": metrics}
 
+    def export(
+        self, ctx: JobContext, *, inputs: dict[str, Any], params: dict[str, Any]
+    ) -> dict[str, Any]:
+        import shutil
+
+        YOLO = _yolo()
+        fmt = inputs.get("format", "onnx")
+        if fmt != "onnx":
+            raise ValueError(f"only onnx export is supported in V1, not {fmt!r}")
+        src = ctx.resolve(inputs["weights"])
+        # ultralytics writes the export next to the weights; work on a job-local copy so the
+        # training run directory is never written to.
+        local_weights = ctx.out_dir / "source.pt"
+        shutil.copyfile(src, local_weights)
+        model = YOLO(str(local_weights))
+        exported = model.export(
+            format="onnx",
+            imgsz=int(params.get("image_size", 640)),
+            opset=int(params.get("opset", 17)),
+            dynamic=bool(params.get("dynamic", False)),
+            device="cpu",
+            verbose=False,
+            **dict(params.get("provider_args") or {}),
+        )
+        exported_path = Path(str(exported))
+        out = ctx.out_dir / "model.onnx"
+        if exported_path.resolve() != out.resolve():
+            shutil.move(str(exported_path), str(out))
+        local_weights.unlink(missing_ok=True)
+        extra: dict[str, Any] = {"exporter": "ultralytics"}
+        try:
+            import onnx
+
+            m = onnx.load(str(out))
+            extra["onnx_ir_version"] = m.ir_version
+            extra["opset_imports"] = [
+                {"domain": o.domain, "version": o.version} for o in m.opset_import
+            ]
+            extra["inputs"] = [i.name for i in m.graph.input]
+            extra["outputs"] = [o.name for o in m.graph.output]
+        except Exception:  # the onnx package is used for inspection only
+            pass
+        return {"artifacts": {"model": ctx.relpath(out)}, "extra": extra}
+
     def autolabel(
         self, ctx: JobContext, *, inputs: dict[str, Any], params: dict[str, Any]
     ) -> dict[str, Any]:
