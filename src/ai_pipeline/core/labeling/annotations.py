@@ -66,6 +66,8 @@ class AnnotationSource(BaseModel):
     format: str | None = None  # e.g. "yolo" for imported labels
     ref: str | None = None  # file the label came from, or model/weights identifier
     label_set_id: str | None = None
+    run_id: str | None = None  # the job that produced it (kind == "model")
+    provider: str | None = None  # model provider name (kind == "model")
 
 
 class Annotation(BaseModel):

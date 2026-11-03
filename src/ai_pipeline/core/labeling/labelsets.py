@@ -6,11 +6,16 @@ Annotations: ``artifacts/<p>/labels/<label_set_id>/annotations.jsonl``
 A label set covers a *scope* of assets (by import ids; default all). Assets in scope with no
 annotations are negatives/background, which object detection allows and validation policy
 bounds (``max_empty_label_ratio``).
+
+One label set feeds one dataset build (V1 rule). Label sets are never merged automatically;
+instead they form a lineage: a model-generated set may later be reviewed into a new, corrected
+set that records ``parent_label_set_id``.
 """
 
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +64,51 @@ def read_class_names(path: Path) -> list[str]:
     return names
 
 
+def create_label_set(
+    project: Project,
+    *,
+    label_set_id: str,
+    annotations: Iterable[Annotation],
+    source: dict[str, Any],
+    scope_assets: list[AssetInfo],
+    import_ids: list[str] | None,
+    labeled_asset_ids: set[str],
+    parse_issues: list[dict[str, Any]] | None = None,
+    unmatched_label_files: list[str] | None = None,
+    parent_label_set_id: str | None = None,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Persist annotations + record. Shared by `label import` and the auto-label hook."""
+    path = annotations_path(project, label_set_id)
+    n = write_annotations_jsonl(path, annotations)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    scope_ids = {a.asset_id for a in scope_assets}
+    parse_issues = parse_issues or []
+    unmatched = unmatched_label_files or []
+    record = {
+        "label_set_id": label_set_id,
+        "state": LabelSetState.READY.value,
+        "created_at": utc_now_iso(),
+        "source": source,
+        "parent_label_set_id": parent_label_set_id,
+        "run_id": run_id,
+        "scope": {"import_ids": import_ids or [], "asset_count": len(scope_assets)},
+        "annotations_file": str(path.relative_to(project.store.root)),
+        "annotations_sha256": digest,
+        "counts": {
+            "annotations": n,
+            "assets_with_annotations": len(labeled_asset_ids & scope_ids),
+            "assets_without_annotations": len(scope_ids - labeled_asset_ids),
+            "unmatched_label_files": len(unmatched),
+            "parse_issues": len(parse_issues),
+        },
+        "unmatched_label_files": unmatched[:200],
+        "parse_issues": parse_issues,
+    }
+    project.store.create("labels", label_set_id, record)
+    return record
+
+
 def import_labels(
     project: Project,
     root: Path,
@@ -97,41 +147,28 @@ def import_labels(
     parsed = task.parse_labels(
         fmt, root.resolve(), class_names=class_names, stem_to_asset=unique, source=source
     )
-
-    path = annotations_path(project, label_set_id)
-    n = write_annotations_jsonl(path, parsed.annotations)
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    scope_ids = {a.asset_id for a in assets}
-    record = {
-        "label_set_id": label_set_id,
-        "state": LabelSetState.READY.value,
-        "created_at": utc_now_iso(),
-        "source": {
+    record = create_label_set(
+        project,
+        label_set_id=label_set_id,
+        annotations=parsed.annotations,
+        source={
             "kind": "imported",
             "format": fmt,
             "path": str(root.resolve()),
             "class_names": class_names,
         },
-        "scope": {"import_ids": import_ids or [], "asset_count": len(assets)},
-        "annotations_file": str(path.relative_to(project.store.root)),
-        "annotations_sha256": digest,
-        "counts": {
-            "annotations": n,
-            "assets_with_annotations": len(parsed.labeled_asset_ids & scope_ids),
-            "assets_without_annotations": len(scope_ids - parsed.labeled_asset_ids),
-            "unmatched_label_files": len(parsed.unmatched_files),
-            "parse_issues": len(parsed.parse_issues),
-        },
-        "unmatched_label_files": parsed.unmatched_files[:200],
-        "parse_issues": [
+        scope_assets=assets,
+        import_ids=import_ids,
+        labeled_asset_ids=parsed.labeled_asset_ids,
+        parse_issues=[
             {"file": p.file, "line": p.line, "message": p.message} for p in parsed.parse_issues
         ],
-    }
-    project.store.create("labels", label_set_id, record)
+        unmatched_label_files=parsed.unmatched_files,
+    )
     log.bind(project=project.name, operation="label.import").info(
         "label set %s: %d annotations, %d parse issues, %d unmatched files",
         label_set_id,
-        n,
+        record["counts"]["annotations"],
         len(parsed.parse_issues),
         len(parsed.unmatched_files),
     )

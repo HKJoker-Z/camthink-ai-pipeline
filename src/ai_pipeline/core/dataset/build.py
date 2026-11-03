@@ -164,7 +164,12 @@ def build_dataset(project: Project, plan: DatasetPlan) -> tuple[dict[str, Any], 
             "labels/images or adjust dataset.validation in project.yaml.",
         )
     if plan.existing_version:
-        return project.store.read("datasets", plan.existing_version), False
+        # Content identity is reused; the *attempt* is still provenance worth keeping. The
+        # store record grows a build_history entry; the immutable directory is untouched.
+        record = project.store.read("datasets", plan.existing_version)
+        record.setdefault("build_history", []).append(_build_event(plan, created=False))
+        project.store.write("datasets", plan.existing_version, record)
+        return record, False
 
     cfg = project.config
     task = get_task(cfg.project.task_type)
@@ -212,6 +217,9 @@ def build_dataset(project: Project, plan: DatasetPlan) -> tuple[dict[str, Any], 
         "files": {"manifest": "manifest.jsonl", "data_config": None},
         "size_bytes": 0,
         "error": None,
+        # Every build request that resolved to this version, first entry = the one that
+        # materialised it. Lives only in the store record, never in the hash.
+        "build_history": [_build_event(plan, created=True)],
     }
     project.store.create("datasets", version, record)
 
@@ -245,6 +253,16 @@ def build_dataset(project: Project, plan: DatasetPlan) -> tuple[dict[str, Any], 
         "built %s (%d images, %d annotations)", version, len(plan.assets), len(plan.annotations)
     )
     return record, True
+
+
+def _build_event(plan: DatasetPlan, *, created: bool) -> dict[str, Any]:
+    return {
+        "at": utc_now_iso(),
+        "created": created,
+        "label_set_id": plan.label_set_id,
+        "import_ids": plan.import_ids,
+        "annotations_sha256": (plan.label_set_record or {}).get("annotations_sha256"),
+    }
 
 
 def _materialise(project: Project, task, store, plan: DatasetPlan, ddir: Path, record: dict) -> int:
