@@ -1,0 +1,68 @@
+# Project configuration for {{project_name}} (generated {{created_at}}).
+# Schema: docs/configuration.md. Unknown keys are rejected.
+# Backend/target names refer to entries in infrastructure.yaml.
+schema_version: 1
+
+project:
+  name: {{project_name}}
+  task_type: {{task_type}}
+  description: ""
+
+dataset:
+  classes: [person]                 # order defines the class index
+  label_format: yolo
+  sources:
+    - type: local_images
+      path: ./data/raw
+  split: { train: 0.8, val: 0.1, test: 0.1, seed: 42 }
+  validation:
+    min_images: 20
+    min_instances_per_class: 10
+    max_empty_label_ratio: 0.5
+
+labeling:
+  auto:
+    provider: ultralytics
+    weights: yolo11n.pt
+    class_map: { person: person }   # pretrained class -> project class; others dropped
+    confidence: 0.4
+    backend: local
+
+model:
+  provider: ultralytics
+  candidates:
+    - { name: yolo11n, weights: yolo11n.pt }
+
+training:
+  backend: local
+  epochs: 5
+  image_size: 640
+  batch_size: 16
+  device: "0"
+  provider_args: {}
+
+evaluation:
+  split: test
+  metrics: [precision, recall, mAP50, mAP50-95]
+  acceptance:
+    mAP50: { min: 0.30 }
+  selection:
+    primary_metric: mAP50-95
+
+export:
+  format: onnx
+  opset: 17
+  image_size: 640
+  dynamic: false
+
+deployment:
+  target: fake                      # switch to ng4511-lab for the real device
+  runtime: tensorrt
+  precision: fp16
+  acceptance:
+    latency_ms_p50: { max: 60 }
+    fps: { min: 15 }
+  health:
+    timeout_s: 120
+    interval_s: 5
+  keep_versions: 3
