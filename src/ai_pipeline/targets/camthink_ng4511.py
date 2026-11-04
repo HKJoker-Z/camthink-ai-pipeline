@@ -281,10 +281,11 @@ class CamThinkNG4511Target:
             self.host.upload(
                 [artifact, tdp / "runtime.json", tdp / "deployment.json"], dep + "/", timeout=900
             )
-            self.host.run(
-                f"mv {shlex.quote(dep + '/' + Path(artifact).name)} {shlex.quote(dep + '/model.onnx')}",
-                timeout=30,
-            )
+            if Path(artifact).name != "model.onnx":
+                self.host.run(
+                    f"mv {shlex.quote(dep + '/' + Path(artifact).name)} {shlex.quote(dep + '/model.onnx')}",
+                    timeout=30,
+                )
             samples = [Path(s) for s in metadata.get("samples") or [] if Path(s).is_file()]
             if samples:
                 self.host.upload(samples, dep + "/samples/", timeout=300)

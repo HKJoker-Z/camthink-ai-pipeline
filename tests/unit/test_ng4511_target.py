@@ -102,6 +102,9 @@ class FakeSsh:
         if c.startswith("mkdir -p"):
             return "", 0
         if c.startswith("mv ") and "model.onnx" in c:
+            src, dst = shlex.split(c)[1:3]
+            if src == dst:  # real mv refuses this; the bug the first device run hit
+                return "", 1
             dep = c.split("/deployments/")[1].split("/")[0]
             self.deployments[dep].add("model.onnx")
             return "", 0
@@ -391,6 +394,20 @@ def test_ng4511_infer_and_setup_via_orchestrator(exported_project, use_fake_targ
     with pytest.raises(OperationError) as ei:
         infer_on_target(p, [tmp_path / "missing.jpg"], target_name="ng4511-lab")
     assert ei.value.code == "IMAGE_NOT_FOUND"
+
+
+def test_stage_renames_only_when_needed(tmp_path):
+    fake = FakeSsh()
+    t = _target(fake)
+    onnx = tmp_path / "model.onnx"
+    onnx.write_bytes(b"x")
+    t.stage("dep-001", onnx, {"runtime_config": {"classes": ["p"]}})
+    assert not any(c.startswith("mv ") for c in fake.commands)  # already model.onnx
+    other = tmp_path / "best.onnx"
+    other.write_bytes(b"y")
+    t.stage("dep-002", other, {})
+    assert any(c.startswith("mv ") and "best.onnx" in c for c in fake.commands)
+    assert "model.onnx" in fake.deployments["dep-002"]
 
 
 def test_stage_refuses_existing_deployment_dir():
