@@ -1,138 +1,146 @@
 # AI server setup (M4)
 
-Status: **environment inspection pending.** The steps below are the baseline that the
-pipeline needs; the environment-specific choices marked *decide after inspection* are filled
-in once `scripts/inspect_ai_server.sh` has been run on the real machine.
+Based on the read-only inspection of the real machine (`scripts/inspect_ai_server.sh`,
+2026-11-04). Facts below are measured, not assumed.
 
 ## Topology
 
 ```
-Grok Bot / Human ──SSH──▶ AI Server ── ai-pipeline ── local ComputeBackend ── GPU
-                                   └── passwordless SSH ──▶ NG4511 (M5)
+Grok Bot / Human ──SSH──▶ ai-server ── ai-pipeline ── local ComputeBackend ── RTX 3080 (GPU 0)
+                                   └── passwordless SSH (key, pinned host key) ──▶ NG4511 (M5)
 ```
 
-The AI server is control host **and** compute host. The `local` backend is the production
-backend; `ssh` stays a schema slot for a possible future split and is not implemented.
+The AI server is control host **and** compute host; the `local` backend is the production
+backend. `ssh` stays a schema slot and is not implemented.
 
-## Step 0 — inspect (read-only)
+## The machine
 
-Run as the account that will operate the pipeline, from any directory:
+| Item | Measured |
+|---|---|
+| Host / account | `ai-server`, user `redahk` (uid 1000, in `sudo`; `umask 0002`) |
+| OS / kernel | Ubuntu 24.04.4 LTS, Linux 6.8.0-139-generic, x86_64 |
+| CPU / RAM | Intel i7-14700K (28 threads), 125 GiB RAM, 8 GiB swap |
+| GPUs | 3 × NVIDIA GeForce RTX 3080 **20 GB**, compute capability 8.6 |
+| Driver / CUDA | driver 595.84 (open kernel module), supports CUDA ≤ 13.2; **no CUDA toolkit / nvcc on disk** (not needed: pip torch wheels bundle the CUDA runtime) |
+| GPU usage | GPU 1 is busy (another process, `~/venvs/yolo`, ~10 GB, 100 %); GPUs 0 and 2 idle → the pipeline uses **GPU 0** |
+| Disk | `/` 226 GB NVMe (135 GB free); **`/home` 7.3 TB (6.4 TB free)** → repo and artifacts live under `/home/redahk` |
+| Python | system Python **3.12.3** with `venv` + `ensurepip`; no system `pip`, no `uv`/conda/pipx |
+| Docker | not available to this user → not used |
+| Tools | git 2.43, OpenSSH 9.6, scp, rsync 3.2.7, curl, wget, tmux, systemd-run, nohup |
+| Internet | PyPI, download.pytorch.org, github.com reachable, no proxy |
+| GitHub | no GitHub host key / credentials configured yet (clone needs auth, see Step 1) |
+| NG4511 link | `~/.ssh/config` alias `camthink-test` → `julian@192.168.5.222`, key `~/.ssh/camthink_edge`, host key pinned in `known_hosts`; BatchMode login **works** |
+
+Two gotchas observed:
+
+- `import ultralytics` "succeeds" in the *system* Python when run from `/home/redahk`, although
+  torch/numpy are missing there. That is almost certainly a directory named `ultralytics` in the
+  home folder shadowing the package. The pipeline never runs Python from `~` (jobs run inside
+  their job directory), but do not use `python3 -c "import ultralytics"` from `~` as a check.
+- An existing `~/venvs/yolo` environment is in active use by another process. The pipeline gets
+  its **own** venv and never touches that one.
+
+## Environment decision
+
+**System Python 3.12 + `python3 -m venv` + pip, one venv for both the CLI and the jobs.**
+Torch comes from PyPI (the default Linux x86_64 wheels are CUDA 12.x builds, compatible with
+driver 595) as a dependency of ultralytics; `onnx`/`onnxslim`/`onnxruntime` are pinned in the
+`provider-ultralytics` extra so ultralytics never pip-installs anything at export time.
+No `uv`, no conda, no Docker, no `sudo`, no CUDA toolkit install.
+
+## Setup commands (run on ai-server as `redahk`)
 
 ```bash
-bash scripts/inspect_ai_server.sh <ng4511-ssh-alias> > ai-server-inspection.txt 2>&1
-```
-
-It installs/modifies nothing (write probes create and delete a temp file; the venv probe uses a
-temp dir; SSH uses `BatchMode` + `StrictHostKeyChecking=yes`, so no keys are added). It
-reports: OS/arch, CPU/RAM/disk and writable roots, `nvidia-smi`/driver/CUDA toolkit, every
-Python interpreter with `venv`/`pip` availability and visible `torch`/`ultralytics`/`onnx`,
-Docker (informational), git/ssh/scp/rsync/curl/systemd, internet reachability (PyPI, PyTorch
-wheels, GitHub), git remote reachability, SSH config/keys, and the AI server → NG4511 link
-(remote user, L4T/JetPack, TensorRT, `trtexec`, Python, rsync, disk, sudo, services, IPs).
-
-## Step 1 — repository
-
-```bash
-git clone <repo-url> ~/camthink-ai-pipeline        # location: decide after inspection
+# 1. clone (private repo: GitHub will prompt for a token over HTTPS)
+cd ~
+git clone https://github.com/HKJoker-Z/camthink-ai-pipeline.git
 cd ~/camthink-ai-pipeline
-```
+git checkout cursor/m4-ai-server-a101        # until the M4 branch is merged to main
 
-Everything the pipeline writes goes under `artifact_root` (`./artifacts` by default) and
-`projects/<p>/data/`; both are gitignored. Put `artifact_root` on the largest writable disk
-(`infrastructure.yaml` → `artifact_root: /data/camthink-ai/artifacts`, *decide after inspection*).
-
-## Step 2 — Python environment (baseline: system Python + venv + pip)
-
-No `uv`, conda or Docker is required. `uv` was only a convenience in the development VM.
-
-```bash
-python3 -m venv .venv                      # needs python3-venv on Debian/Ubuntu
+# 2. one venv for CLI + jobs (ControlHost == ComputeHost)
+python3 -m venv .venv
 . .venv/bin/activate
-pip install --upgrade pip
-pip install -e ".[dev]"                    # control plane + tests (no ML libraries)
+python -m pip install --upgrade pip
+pip install -e ".[dev,provider-ultralytics]"   # pulls torch (CUDA wheels), ultralytics, onnx*
+
+# 3. prove CUDA is usable from this interpreter
+python -c "import torch; print(torch.__version__, 'cuda', torch.version.cuda, torch.cuda.is_available(), torch.cuda.device_count(), [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())])"
+#   expected: 2.x.x+cu12x  cuda 12.x  True  3  ['NVIDIA GeForce RTX 3080', ...]
+#   if it prints "+cpu" / None / False, stop and report — explicit-GPU training would fail
+#   with GPU_DEVICE_UNAVAILABLE by design.
+
+# 4. control plane sanity + unit tests (no GPU used)
+ai-pipeline --version
+ai-pipeline project validate demo_person_detection
+pytest -q -m "not slow"
+
+# 5. GPU integration test through the real job runner (downloads yolo11n.pt once)
+AIP_TEST_DEVICE=0 AIP_ML_PYTHON=$PWD/.venv/bin/python pytest -q -m slow tests/integration
 ```
 
-One interpreter can serve both the CLI and the jobs (ControlHost == ComputeHost). Install the
-ML extra into the **same** venv or a second one named in `compute_backends.local.python`:
+`infrastructure.yaml` needs **no change**: `compute_backends.local` without `python` uses the
+CLI's own interpreter (the venv), `artifact_root: ./artifacts` resolves to
+`/home/redahk/camthink-ai-pipeline/artifacts` on the 7.3 TB disk. Step 5 asserts from run
+metadata that training ran on CUDA (`environment.device.policy == "explicit-gpu"`).
 
-```bash
-# torch must match the driver's CUDA capability. Pick the wheel index after inspection:
-#   driver >= 550 : --index-url https://download.pytorch.org/whl/cu124   (decide after inspection)
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cuXXX
-pip install -e ".[provider-ultralytics]"   # ultralytics (+ onnx for export)
-python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
-```
+If `git clone` over HTTPS is inconvenient, the alternative is an SSH deploy key plus
+`ssh-keyscan github.com >> ~/.ssh/known_hosts` (the inspection showed no GitHub host key).
 
-The last line must print a CUDA version and `True`; a `+cpu` wheel or `False` means explicit
-GPU training will fail with `GPU_DEVICE_UNAVAILABLE` (by design — see below).
-
-If the server already provides a working torch (system package, existing venv, module), point
-`compute_backends.local.python` at that interpreter instead and only install
-`-e ".[provider-ultralytics]"` into it. Docker is an option only if inspection shows no
-usable host CUDA stack.
-
-## Step 3 — infrastructure.yaml
-
-```yaml
-artifact_root: /data/camthink-ai/artifacts     # decide after inspection
-compute_backends:
-  local:
-    type: local
-    python: /home/<user>/camthink-ai-pipeline/.venv/bin/python   # interpreter with torch+ultralytics
-deployment_targets:
-  fake: {type: fake, root: ./.fake-target}
-  ng4511-lab: {type: camthink_ng4511, ssh_host: ng4511, ...}     # M5
-```
-
-## Step 4 — GPU policy (strict)
+## GPU policy (strict)
 
 `training.device` in `project.yaml`:
 
 | value | behaviour |
 |---|---|
-| `"0"`, `"0,1"`, `"cuda"`, `"cuda:1"` | explicit GPU: every index must exist **or the job fails** with `GPU_DEVICE_UNAVAILABLE` (details: requested, `cuda_available`, `device_count`, `device_names`, torch/CUDA versions; hint: check `nvidia-smi` and the torch wheel). Never a silent CPU fallback. |
+| `"0"`, `"0,2"`, `"cuda"`, `"cuda:2"` | explicit GPU: every index must exist **or the job fails** with `GPU_DEVICE_UNAVAILABLE` (details: requested, `cuda_available`, `device_count`, `device_names`, torch/CUDA versions). Never a silent CPU fallback. |
 | `"cpu"` | CPU, always |
 | `"auto"` | first GPU if available, else CPU (explicit opt-in to fallback) |
 
-Production projects use an explicit GPU index. Every run records
-`environment.device = {requested, used, policy, cuda_available, device_count, device_names}`
-plus `environment.gpu`, `environment.cuda`, `environment.torch`, `environment.ultralytics`;
-`run status -o json` exposes it, which is how the acceptance test proves GPU execution.
+The demo project uses `"0"` (idle GPU; GPU 1 is occupied by another workload). Every run
+records `environment.device = {requested, used, policy, cuda_available, device_count,
+device_names}` plus `gpu`, `cuda`, `torch`, `ultralytics`; `run status -o json` exposes it.
 
-## Step 5 — verify
-
-```bash
-pytest -m "not slow"                                        # 183 unit tests, no GPU needed
-AIP_TEST_DEVICE=0 AIP_ML_PYTHON=$PWD/.venv/bin/python pytest -m slow tests/integration
-```
-
-The slow test trains, evaluates, auto-labels and exports through the real provider and, with
-`AIP_TEST_DEVICE=0`, asserts the run metadata proves CUDA execution.
-
-## Step 6 — M4 acceptance workflow
+## M4 acceptance workflow
 
 ```bash
+cd ~/camthink-ai-pipeline && . .venv/bin/activate
 bash scripts/m4_acceptance.sh demo_person_detection
 ```
 
-CLI only; downloads the COCO128 sample (~7 MB, CC BY 4.0) into
+CLI only, edits no configuration. Downloads the COCO128 sample (~7 MB, CC BY 4.0) into
 `projects/demo_person_detection/data/coco128/`, then: `data import` → `label auto` (pretrained
-`yolo11n.pt`, person only) → `dataset validate/build` → `train start --wait` (GPU) → GPU proof
-from run metadata → `evaluate run --wait` → `model select` → `export start --wait` → `status`.
-It edits no configuration; the demo project's `project.yaml` governs device (`"0"`), epochs
-(20 — the detection head is re-initialised for the single-class list), thresholds
-(`mAP50 ≥ 0.3`, `max_empty_label_ratio 0.7` because ~40 % of COCO128 images contain a person).
-Re-running is safe: imports dedupe, the dataset build is idempotent, runs get new ids.
+`yolo11n.pt`, `person` only) → `dataset validate/build` → `train start --wait` on GPU 0
+(20 epochs, 640 px; the detection head is re-initialised for the single-class list) → GPU proof
+from run metadata → `evaluate run --wait` (`mAP50 ≥ 0.3`) → `model select` → `export start
+--wait` (ONNX, opset 17) → `status`. Expected wall time on an RTX 3080: a few minutes, dominated
+by weight downloads and the 20 epochs. Re-running is safe (imports dedupe, dataset build is
+idempotent, runs get new ids). Envelopes of every step are kept in a temp dir printed at the
+start; `ai-pipeline -o json run status demo_person_detection <run_id>` shows the full metadata.
 
 A CPU dry run of the same script (device `cpu`, 10 epochs, 320 px) completed in the development
 VM: eval mAP50 0.995 → ACCEPTED → `exp-001` (10.5 MB ONNX).
 
 ## Operating notes
 
-- Jobs are detached subprocesses (`start_new_session`); the SSH session that started
-  `ai-pipeline train start` may close, `run status <p> <run_id>` picks the run up later.
+- Jobs are detached subprocesses (`start_new_session`); the SSH session may close.
+  `ai-pipeline run status <p> <run_id>` or `run list <p>` picks runs up later.
 - Logs: `artifacts/<p>/runs/<run_id>/runner.log`; `ai-pipeline run logs <p> <run_id> --tail 50`.
-- Pretrained weights are downloaded by ultralytics on first use into its cache
-  (`~/.config/Ultralytics`, `yolo11n.pt` in the CWD of the job); internet or a pre-seeded
-  cache is required — *decide after inspection*.
-- Nothing requires `sudo`.
+- ultralytics downloads `yolo11n.pt` into the job's working directory on first use (5 MB per
+  job that references a bare filename); point `weights` at an absolute path to share one copy.
+- Nothing requires `sudo`; the user's existing `~/venvs/yolo` is left untouched.
+
+## Facts gathered for M5 (NG4511) — do not act on them yet
+
+| Item | Measured on `camthink-test` (192.168.5.222) |
+|---|---|
+| Device | CamThink NeoEdge **NG4511**, image `aibox-NG4511-36.4.3-super-jetpack-V1.1`, hostname `julian-camthink`, aarch64 |
+| Software | L4T **R36.4.3**, **JetPack 6.2** (+b77), kernel 5.15.148-tegra, **TensorRT 10.3.0.30 + CUDA 12.5**, `trtexec` at `/usr/src/tensorrt/bin/trtexec`, Python 3.10.12, Docker 29.1.3, rsync present, systemd 249 |
+| Resources | 233 GB NVMe (172 GB free), 7.4 GiB RAM (5.3 GiB available), power mode **25W** |
+| Account | `julian` (uid 1000; groups incl. `sudo`, `video`, `render`, `gpio`), **passwordless sudo: no**; `/opt/camthink-ai` does not exist |
+| Existing software | **`camthink-detect-web.service` is running ("CamThink Detect Web (YOLO11n on RTSP)")** — a vendor/demo inference service that must be inspected before deciding the M5 runtime and service-control strategy |
+| Link | AI server → device SSH works non-interactively with key `camthink_edge`; host key pinned |
+
+Implications to settle in M5 (not now): install root without sudo (`/home/julian/…` or a one-time
+sudo for `/opt/camthink-ai`), whether to integrate with or replace `camthink-detect-web`,
+`systemd --user` vs system service, `trtexec` FP16 build parameters for TensorRT 10.3, and
+transfer via `scp` (baseline) or `rsync` (available on both ends).

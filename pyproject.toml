@@ -20,8 +20,16 @@ dependencies = [
 
 [project.optional-dependencies]
 # Installed only in the interpreter that runs jobs (compute_backends.<name>.python).
-# Never imported by the CLI/control plane.
-provider-ultralytics = ["ultralytics>=8.3"]
+# Never imported by the CLI/control plane. The ONNX packages are pinned here because
+# ultralytics otherwise pip-installs them on the fly during export (non-deterministic envs).
+# torch/torchvision come in as ultralytics dependencies; on Linux x86_64 the default PyPI
+# wheels are CUDA-enabled.
+provider-ultralytics = [
+    "ultralytics>=8.3",
+    "onnx>=1.12",
+    "onnxslim>=0.1.82",
+    "onnxruntime>=1.20",
+]
 dev = [
     "pytest>=8",
     "pytest-cov>=5",
