@@ -25,6 +25,12 @@ Status: **ACCEPTED for M0 (2026-11-03) with the topology decision below.**
   (`GPU_DEVICE_UNAVAILABLE`) instead of falling back to CPU. Deployment stays synchronous for
   V1; `scp` is the M5 transfer baseline; deployment pruning is deferred to an explicit
   `deploy prune` with protections. See `docs/training-server.md`.
+- **M4 accepted (2026-11-04):** real GPU training/evaluation/export on `ai-server`
+  (Ubuntu 24.04, 3× RTX 3080 20 GB, driver 595.84, Python 3.12 venv, torch 2.15+cu132,
+  ultralytics 8.4.202). §25 items 2–7 are resolved (see `docs/training-server.md`); items
+  8–15 and 20–25 are *measured* (L4T R36.4.3 / JetPack 6.2, TensorRT 10.3, trtexec, Python
+  3.10, rsync, 172 GB free, 7.4 GiB RAM, user `julian` without passwordless sudo, vendor
+  service `camthink-detect-web.service` running) but their *implications* are decided in M5.
 
 ```
 Human / future Grok Bot

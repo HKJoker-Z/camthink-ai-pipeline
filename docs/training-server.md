@@ -1,7 +1,8 @@
 # AI server setup (M4)
 
 Based on the read-only inspection of the real machine (`scripts/inspect_ai_server.sh`,
-2026-11-04). Facts below are measured, not assumed.
+2026-11-04) and the M4 acceptance run executed on it the same day. Facts below are measured,
+not assumed. **M4 status: accepted** — see "M4 acceptance result" at the end.
 
 ## Topology
 
@@ -43,9 +44,10 @@ Two gotchas observed:
 ## Environment decision
 
 **System Python 3.12 + `python3 -m venv` + pip, one venv for both the CLI and the jobs.**
-Torch comes from PyPI (the default Linux x86_64 wheels are CUDA 12.x builds, compatible with
-driver 595) as a dependency of ultralytics; `onnx`/`onnxslim`/`onnxruntime` are pinned in the
-`provider-ultralytics` extra so ultralytics never pip-installs anything at export time.
+Torch comes from PyPI as a dependency of ultralytics (the default Linux x86_64 wheel is
+CUDA-enabled; the acceptance run installed `torch 2.15.0+cu132`, matching the driver's CUDA
+13.2); `onnx`/`onnxslim`/`onnxruntime` are pinned in the `provider-ultralytics` extra so
+ultralytics never pip-installs anything at export time.
 No `uv`, no conda, no Docker, no `sudo`, no CUDA toolkit install.
 
 ## Setup commands (run on ai-server as `redahk`)
@@ -65,7 +67,7 @@ pip install -e ".[dev,provider-ultralytics]"   # pulls torch (CUDA wheels), ultr
 
 # 3. prove CUDA is usable from this interpreter
 python -c "import torch; print(torch.__version__, 'cuda', torch.version.cuda, torch.cuda.is_available(), torch.cuda.device_count(), [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())])"
-#   expected: 2.x.x+cu12x  cuda 12.x  True  3  ['NVIDIA GeForce RTX 3080', ...]
+#   measured: 2.15.0+cu132  cuda 13.2  True  3  ['NVIDIA GeForce RTX 3080', ...]
 #   if it prints "+cpu" / None / False, stop and report — explicit-GPU training would fail
 #   with GPU_DEVICE_UNAVAILABLE by design.
 
@@ -119,6 +121,23 @@ start; `ai-pipeline -o json run status demo_person_detection <run_id>` shows the
 
 A CPU dry run of the same script (device `cpu`, 10 epochs, 320 px) completed in the development
 VM: eval mAP50 0.995 → ACCEPTED → `exp-001` (10.5 MB ONNX).
+
+## M4 acceptance result (ai-server, 2026-11-04, GPU 0)
+
+| Step | Result |
+|---|---|
+| import | 128 COCO128 images → 128 assets |
+| `label auto` (yolo11n.pt, person) | run `run-20261104-022656-e002` → label set `lbl-20261104-022659-ef61`, 151 annotations on 56 images, device `0` |
+| dataset | `ds-v001` hash `ed40ff6d0cb0f04f`, 128 images / 151 annotations, split 102/13/13 |
+| train (20 epochs, 640 px) | run `run-20261104-022659-7f7b` → `mv-001`; val precision 0.927, recall 0.744, mAP50 **0.942**, mAP50-95 0.643; ~20 s wall time |
+| GPU proof (run metadata) | `torch 2.15.0+cu132`, `cuda 13.2`, `ultralytics 8.4.202`, `gpu NVIDIA GeForce RTX 3080`, `cuda_available true`, `device {requested: "0", used: "0", policy: explicit-gpu}` → **PASS** |
+| evaluate (test split) | mAP50 **0.923** ≥ 0.3 → model **ACCEPTED** |
+| select | `mv-001` (mAP50-95 0.571) |
+| export | `exp-001`, ONNX opset 17, 10 663 501 bytes, sha256 `eb57078875b6…`, inputs `images`, outputs `output0` |
+| status | `current_dataset_version ds-v001`, `selected_model_version mv-001`, next: `deploy start` (M5) |
+
+No pipeline source changes were required for the real environment beyond the strict device
+policy and the pinned ONNX packages; `infrastructure.yaml` was used unchanged.
 
 ## Operating notes
 
