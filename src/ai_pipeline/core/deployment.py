@@ -23,7 +23,10 @@ metrics vs ``deployment.acceptance``) gates activation on a particular target.
 
 from __future__ import annotations
 
+import json
+import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from ai_pipeline.core.errors import OperationError, PipelineError, PolicyRejected, StateError
@@ -156,6 +159,8 @@ def start_deployment(
         "target_info": None,
         "staged": None,
         "runtime_artifact": None,
+        "runtime_config": None,
+        "samples": None,
         "smoke": None,
         "benchmark": None,
         "acceptance": None,
@@ -191,7 +196,23 @@ def start_deployment(
         "export_sha256": export["artifact"]["sha256"],
         "precision": cfg.deployment.precision,
         "runtime": cfg.deployment.runtime,
+        "runtime_config": runtime_config(project, model_version=mv, export_id=export["export_id"]),
+        "samples": [
+            str(p)
+            for p in sample_images(
+                project, model.get("dataset_version"), cfg.deployment.smoke.samples
+            )
+        ],
     }
+    record["runtime_config"] = metadata["runtime_config"]
+    record["samples"] = metadata["samples"]
+    configure = getattr(target, "configure", None)
+    if configure:
+        configure(
+            smoke_min_detections=cfg.deployment.smoke.min_detections,
+            bench_iterations=cfg.deployment.benchmark.iterations,
+            bench_warmup=cfg.deployment.benchmark.warmup,
+        )
     if not pre_activation(_D.VERIFYING, "verify", target.verify, "target_info"):
         return record
     if not pre_activation(
@@ -264,7 +285,9 @@ def start_deployment(
 
     ph.to(_D.HEALTH_CHECKING)
     try:
-        record["health"] = target.health_check()
+        record["health"] = wait_healthy(
+            target, cfg.deployment.health.timeout_s, cfg.deployment.health.interval_s
+        )
     except Exception as exc:  # noqa: BLE001
         _rollback(project, target, record, reason=_error(exc, "health_check"))
         return record
@@ -320,7 +343,8 @@ def _perform_rollback(
     try:
         outcome["result"] = target.rollback(to)
         if to is not None:
-            health = target.health_check()
+            hc = project.config.deployment.health
+            health = wait_healthy(target, hc.timeout_s, hc.interval_s)
             outcome["health"] = health
             if not health.get("healthy"):
                 raise OperationError(
@@ -343,6 +367,104 @@ def _perform_rollback(
             _Phase(project, prev).to(_D.ACTIVE, restored_by=dep_id)
     project.set_pointer("active_deployment", to)
     blog.warning("rolled back %s to %s (%s)", dep_id, to, reason)
+
+
+def wait_healthy(target: DeploymentTarget, timeout_s: float, interval_s: float) -> dict[str, Any]:
+    """Poll the target until healthy or the timeout elapses; returns the last result (with the
+    number of attempts). A freshly restarted service needs time to load its engine."""
+    deadline = time.monotonic() + timeout_s
+    attempts = 0
+    while True:
+        attempts += 1
+        result = target.health_check()
+        result.setdefault("details", {})["attempts"] = attempts
+        if result.get("healthy") or time.monotonic() >= deadline:
+            return result
+        time.sleep(interval_s)
+
+
+def runtime_config(project: Project, *, model_version: str, export_id: str) -> dict[str, Any]:
+    """The configuration the edge runtime needs; everything model-specific lives here."""
+    cfg = project.config
+    inf = cfg.deployment.inference
+    return {
+        "schema_version": 1,
+        "task": cfg.project.task_type,
+        "project": project.name,
+        "model_version": model_version,
+        "export_id": export_id,
+        "classes": list(cfg.dataset.classes),
+        "input_size": cfg.export.image_size,
+        "precision": cfg.deployment.precision,
+        "preprocess": {"letterbox": True, "pad_value": 114, "scale": 1 / 255.0, "channels": "rgb"},
+        "postprocess": {
+            "type": "yolo",
+            "confidence": inf.confidence,
+            "iou": inf.iou,
+            "max_detections": inf.max_detections,
+        },
+    }
+
+
+def sample_images(project: Project, dataset_version: str | None, n: int) -> list[Path]:
+    """First ``n`` test-split images of the dataset version (by asset id) for smoke tests."""
+    if not dataset_version or n <= 0:
+        return []
+    from ai_pipeline.core.dataset.build import dataset_dir
+
+    ddir = dataset_dir(project, dataset_version)
+    manifest = ddir / "manifest.jsonl"
+    if not manifest.is_file():
+        return []
+    out: list[Path] = []
+    for line in manifest.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if row.get("split") == "test" and (ddir / row["image"]).is_file():
+            out.append(ddir / row["image"])
+            if len(out) >= n:
+                break
+    if not out:  # tiny datasets may have an empty test split: fall back to val
+        for line in manifest.read_text(encoding="utf-8").splitlines():
+            row = json.loads(line) if line.strip() else None
+            if row and row.get("split") == "val" and (ddir / row["image"]).is_file():
+                out.append(ddir / row["image"])
+                if len(out) >= n:
+                    break
+    return out
+
+
+def setup_target(project: Project, target_name: str | None = None) -> dict[str, Any]:
+    name = target_name or project.config.deployment.target
+    target = get_target(name, project.settings)
+    setup = getattr(target, "setup_runtime", None)
+    if setup is None:
+        raise OperationError(f"target {name} does not support setup", code="TARGET_NO_SETUP")
+    return {"target": name, **setup()}
+
+
+def infer_on_target(
+    project: Project,
+    images: list[Path],
+    *,
+    target_name: str | None = None,
+    deployment_id: str | None = None,
+) -> dict[str, Any]:
+    pointers = project.pointers()
+    dep_id = deployment_id or pointers["active_deployment"]
+    name = target_name
+    if name is None and dep_id and project.store.exists("deployments", dep_id):
+        name = project.store.read("deployments", dep_id)["target"]
+    name = name or project.config.deployment.target
+    target = get_target(name, project.settings)
+    missing = [str(p) for p in images if not p.is_file()]
+    if missing:
+        raise OperationError(
+            f"image(s) not found: {missing}", code="IMAGE_NOT_FOUND", details={"missing": missing}
+        )
+    result = target.infer(images, deployment_id=deployment_id)
+    return {"target": name, "deployment_id": dep_id, **result}
 
 
 def _safe_current(target: DeploymentTarget) -> str | None:

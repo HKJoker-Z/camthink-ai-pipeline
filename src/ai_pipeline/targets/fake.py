@@ -133,7 +133,10 @@ class FakeTarget:
         ddir.mkdir(parents=True)
         dest = ddir / ("model" + Path(artifact).suffix)
         shutil.copyfile(artifact, dest)
-        write_json_atomic(ddir / "deployment.json", {**metadata, "staged_at": utc_now_iso()})
+        meta = {k: v for k, v in metadata.items() if k != "samples"}
+        write_json_atomic(ddir / "deployment.json", {**meta, "staged_at": utc_now_iso()})
+        if metadata.get("runtime_config"):
+            write_json_atomic(ddir / "runtime.json", metadata["runtime_config"])
         return {
             "path": str(dest),
             "sha256": hashlib.sha256(dest.read_bytes()).hexdigest(),
@@ -230,6 +233,49 @@ class FakeTarget:
         if not self.current_link.is_symlink():
             return None
         return Path(os.readlink(self.current_link)).name
+
+    def configure(self, **_: Any) -> None:
+        return None
+
+    def setup_runtime(self) -> dict[str, Any]:
+        self._ensure_root()
+        return {
+            "root": str(self.root),
+            "bundle": {"runtime_version": "fake", "updated": False},
+            "warnings": [],
+        }
+
+    def infer(self, images: list[Path], *, deployment_id: str | None = None) -> dict[str, Any]:
+        dep = deployment_id or self.current()
+        if dep is None:
+            raise OperationError(
+                "no active deployment to run inference with", code="NO_ACTIVE_DEPLOYMENT"
+            )
+        cfg = (
+            json.loads((self._dep_dir(dep) / "runtime.json").read_text())
+            if (self._dep_dir(dep) / "runtime.json").is_file()
+            else {}
+        )
+        cls = (cfg.get("classes") or ["object"])[0]
+        return {
+            "runtime_version": "fake",
+            "classes": cfg.get("classes") or [cls],
+            "images": [
+                {
+                    "image": str(p),
+                    "detections": [
+                        {
+                            "class_id": 0,
+                            "class_name": cls,
+                            "confidence": 0.9,
+                            "bbox_xyxy": [10.0, 10.0, 100.0, 100.0],
+                        }
+                    ],
+                }
+                for p in images
+            ],
+            "total_detections": len(images),
+        }
 
     def rollback(self, to_deployment_id: str | None) -> dict[str, Any]:
         self._maybe_fail("rollback")

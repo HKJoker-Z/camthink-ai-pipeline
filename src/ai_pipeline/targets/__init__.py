@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ai_pipeline.core.config.schema import FakeTargetConfig
+from ai_pipeline.core.config.schema import CamThinkNG4511TargetConfig, FakeTargetConfig
 from ai_pipeline.core.errors import ConfigError, OperationError
 from ai_pipeline.core.settings import Settings
 from ai_pipeline.targets.base import DeploymentTarget
@@ -26,6 +26,10 @@ def get_target(name: str, settings: Settings) -> DeploymentTarget:
         if not root.is_absolute():  # relative to the infrastructure file, like other roots
             root = (settings.infra_path.parent / root).resolve()
         return FakeTarget(name=name, root=root)
+    if isinstance(cfg, CamThinkNG4511TargetConfig):
+        from ai_pipeline.targets.camthink_ng4511 import CamThinkNG4511Target
+
+        return CamThinkNG4511Target(name=name, cfg=cfg)
     raise OperationError(
         f"deployment target type {cfg.type!r} is not implemented yet (planned for M5)",
         code="TARGET_NOT_IMPLEMENTED",

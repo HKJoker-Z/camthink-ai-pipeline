@@ -10,6 +10,7 @@ Phase contracts:
 verify()                       -> {"reachable": bool, "environment": {...}, "current": dep|None,
                                    "staged": [dep, ...]}
 stage(dep, artifact, meta)     -> {"path": str, "sha256": str, "size_bytes": int}
+    meta carries "runtime_config" (written as runtime.json) and "samples" (local image paths)
 prepare(dep, precision, params)-> {"engine_path": str, "engine_sha256": str, "build_params": {...},
                                    "environment": {...}, "duration_s": float}
 smoke_test(dep)                -> {"passed": bool, "details": {...}}  (failed test => passed=False)
@@ -53,3 +54,10 @@ class DeploymentTarget(Protocol):
     def current(self) -> str | None: ...
 
     def rollback(self, to_deployment_id: str | None) -> dict[str, Any]: ...
+
+    # Optional extras used by the CLI (`target setup`, `deploy infer`):
+    def setup_runtime(self) -> dict[str, Any]: ...
+
+    def infer(self, images: list[Path], *, deployment_id: str | None = None) -> dict[str, Any]: ...
+
+    def configure(self, **knobs: Any) -> None: ...

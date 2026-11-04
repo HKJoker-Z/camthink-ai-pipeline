@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -11,9 +12,11 @@ from ai_pipeline.cli.output import Envelope
 from ai_pipeline.core.deployment import (
     deployment_summary,
     health,
+    infer_on_target,
     list_deployments,
     raise_for_state,
     rollback_deployment,
+    setup_target,
     start_deployment,
 )
 from ai_pipeline.core.errors import PipelineError
@@ -225,6 +228,68 @@ def health_cmd(
         )
 
     run_command(ctx, "health", op, project=name)
+
+
+@app.command("infer")
+def infer_cmd(
+    ctx: typer.Context,
+    name: str = typer.Argument(..., help="Project name."),
+    images: list[Path] = typer.Argument(
+        ..., help="Local image files to run through the deployed model."
+    ),
+    deployment_id: str | None = typer.Option(
+        None, "--deployment", help="Deployment id (default: active)."
+    ),
+    target: str | None = typer.Option(
+        None, "--target", help="Target name (default: the deployment's)."
+    ),
+) -> None:
+    """Run real inference on the target with the active (or given) deployment."""
+
+    def op(cli: CliContext) -> Envelope:
+        project = Project.load(name, cli.settings)
+        result = infer_on_target(
+            project,
+            [p.expanduser() for p in images],
+            target_name=target,
+            deployment_id=deployment_id,
+        )
+        lines = []
+        for img in result.get("images", []):
+            lines.append(f"{Path(img['image']).name}: {len(img['detections'])} detection(s)")
+            for d in img["detections"][:10]:
+                lines.append(f"    {d['class_name']} {d['confidence']:.2f} {d['bbox_xyxy']}")
+        return Envelope(
+            operation="deploy.infer",
+            project=name,
+            result=result,
+            human_text="\n".join(lines) + f"\ntotal detections: {result.get('total_detections')}",
+        )
+
+    run_command(ctx, "deploy.infer", op, project=name)
+
+
+@target_app.command("setup")
+def setup_cmd(
+    ctx: typer.Context,
+    name: str = typer.Argument(..., help="Project name."),
+    target: str | None = typer.Option(
+        None, "--target", help="Target name (default: deployment.target)."
+    ),
+) -> None:
+    """Install/update the edge runtime bundle and inference service on the target (idempotent)."""
+
+    def op(cli: CliContext) -> Envelope:
+        project = Project.load(name, cli.settings)
+        info = setup_target(project, target)
+        text = f"target {info['target']}: runtime {info['bundle'].get('runtime_version')} " + (
+            "installed" if info["bundle"].get("updated") else "up to date"
+        )
+        for w in info.get("warnings", []):
+            text += f"\n  warning: {w}"
+        return Envelope(operation="target.setup", project=name, result=info, human_text=text)
+
+    run_command(ctx, "target.setup", op, project=name)
 
 
 @target_app.command("verify")

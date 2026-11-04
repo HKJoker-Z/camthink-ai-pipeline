@@ -21,7 +21,8 @@ through a model provider, run tracking, auto-labeling, evaluation with project-d
 acceptance, model registry (M2); ONNX export as a job, first-class deployments with benchmark
 policy, activation, automatic rollback and a fake target (M3); validated on the real AI server
 with GPU training, evaluation and ONNX export (M4, see
-[docs/training-server.md](docs/training-server.md)). NG4511 integration is M5. See
+[docs/training-server.md](docs/training-server.md)); own TensorRT inference runtime and real
+NG4511 target (M5, see [docs/ng4511-deployment.md](docs/ng4511-deployment.md)). See
 [`docs/design/v1-architecture-proposal.md`](docs/design/v1-architecture-proposal.md).
 
 ## Install
@@ -51,7 +52,9 @@ ai-pipeline evaluate run my_detector mv-001 --wait   # metrics + acceptance -> A
 ai-pipeline model select my_detector            # best accepted by evaluation.selection
 ai-pipeline label auto my_detector --wait       # pretrained model -> new label set (kind: model)
 ai-pipeline export start my_detector --wait     # export job -> exp-001 (ONNX)
-ai-pipeline deploy start my_detector            # stage/prepare/smoke/benchmark/policy/activate/health
+ai-pipeline target setup my_detector            # install the edge runtime + user service on the device
+ai-pipeline deploy start my_detector            # stage/TensorRT build/smoke/benchmark/policy/activate/health
+ai-pipeline deploy infer my_detector photo.jpg  # real inference on the device
 ai-pipeline health my_detector                  # target health vs active deployment
 ai-pipeline rollback my_detector                # restore previous known-good deployment
 ai-pipeline status my_detector                  # pointers, counts, next valid operations
@@ -70,6 +73,7 @@ projects refer to. Generated state lives under `artifacts/` (gitignored).
 - [docs/runs-and-models.md](docs/runs-and-models.md) — jobs, backends, providers, runs, registry, evaluation policy
 - [docs/deployment.md](docs/deployment.md) — exports, deployment targets, deployment state machine, rollback
 - [docs/training-server.md](docs/training-server.md) — AI server inspection, setup, strict GPU policy, M4 acceptance
+- [docs/ng4511-deployment.md](docs/ng4511-deployment.md) — edge runtime (`camthink_edge`), NG4511 target, device layout, service
 - [docs/design/v1-architecture-proposal.md](docs/design/v1-architecture-proposal.md) — full design, milestones, open items
 
 ## Development

@@ -34,6 +34,7 @@ dev = [
     "pytest>=8",
     "pytest-cov>=5",
     "ruff>=0.5",
+    "numpy>=1.24",   # edge runtime pre/post-processing tests
 ]
 
 [project.scripts]
@@ -60,6 +61,14 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# Remote shell command strings read better unwrapped.
+"src/ai_pipeline/core/remote.py" = ["E501"]
+"src/ai_pipeline/targets/camthink_ng4511.py" = ["E501"]
+# Standalone edge runtime: keeps long argparse/JSON lines for readability on the device.
+"src/ai_pipeline/edge_bundle/**" = ["E501"]
+"tests/unit/test_ng4511_target.py" = ["E501"]
 
 [tool.ruff.lint.flake8-bugbear]
 extend-immutable-calls = ["typer.Option", "typer.Argument"]

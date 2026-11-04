@@ -84,9 +84,16 @@ directly.
 | `targets.base` | `DeploymentTarget` protocol (verify, stage, prepare, smoke_test, benchmark, activate, health_check, rollback) |
 | `targets.fake` | directory-based target with atomic `current` symlink and `inject.json` failure injection |
 
+## Edge runtime and real target (M5) — details in [ng4511-deployment.md](ng4511-deployment.md)
+
+| Module | Responsibility |
+|---|---|
+| `edge_bundle/camthink_edge` | standalone device runtime (data, not imported): `build` (trtexec), `infer`, `smoke`, `benchmark`, `health`, `serve`; config-driven via `runtime.json` |
+| `core.remote` | `SshHost`: `ssh`/`scp` subprocess wrapper with `RemoteError` details |
+| `targets.camthink_ng4511` | `DeploymentTarget` over SSH: bundle install, user-owned layout, `systemd --user` service, phase commands |
+
 Seam status: `ComputeBackend` has `local` (production for V1, where control host == compute
-host) and a schema slot for `ssh` (M4). `DeploymentTarget` has `fake`; `camthink_ng4511` is a
-schema slot until M5.
+host) and a schema slot for `ssh`. `DeploymentTarget` has `fake` and `camthink_ng4511`.
 
 ## Filesystem layout at runtime
 

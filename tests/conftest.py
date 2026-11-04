@@ -77,8 +77,55 @@ def demo_project(settings: Settings):
 
     p = Project.create("demo", settings)
     text = p.config_path.read_text()
-    text = text.replace("min_images: 20", "min_images: 4").replace(
-        "min_instances_per_class: 10", "min_instances_per_class: 1"
+    text = (
+        text.replace("min_images: 20", "min_images: 4")
+        .replace("min_instances_per_class: 10", "min_instances_per_class: 1")
+        .replace("timeout_s: 120", "timeout_s: 0.5")  # health polling: keep fake tests fast
+        .replace("interval_s: 5", "interval_s: 0.1")
     )
     p.config_path.write_text(text)
     return Project.load("demo", settings)
+
+
+def export_model(p, mv: str | None = None, **kw):
+    """Run (or reuse) an export for a model through the job framework and return the record."""
+    from ai_pipeline.core.exports import start_export
+    from ai_pipeline.core.runs import wait_run
+
+    run, existing = start_export(p, model_version=mv, **kw)
+    if existing is not None:
+        return existing
+    run = wait_run(p, run["run_id"], timeout_s=30)
+    assert run["state"] == "COMPLETED", run.get("error")
+    return p.store.read("exports", run["export_id"])
+
+
+@pytest.fixture
+def accepted_project(demo_project, tmp_path: Path):
+    """Project with a fake provider, a READY dataset, an ACCEPTED + selected model."""
+    from ai_pipeline.core.data.importer import import_images
+    from ai_pipeline.core.dataset.build import build_dataset, plan_dataset
+    from ai_pipeline.core.labeling.labelsets import import_labels
+    from ai_pipeline.core.project import Project
+    from ai_pipeline.core.registry import select_model
+    from ai_pipeline.core.runs import start_evaluation, start_training, wait_run
+
+    cfg = demo_project.config_path
+    cfg.write_text(cfg.read_text().replace("provider: ultralytics", "provider: fake"))
+    p = Project.load("demo", demo_project.settings)
+    src = tmp_path / "src"
+    imgs = make_image_set(src, 12)
+    write_yolo_labels(tmp_path / "labels", [i.stem for i in imgs])
+    import_images(p, [src])
+    import_labels(p, tmp_path / "labels", fmt="yolo")
+    build_dataset(p, plan_dataset(p))
+    run = wait_run(p, start_training(p)["run_id"], timeout_s=30)
+    wait_run(p, start_evaluation(p, run["model_version"])["run_id"], timeout_s=30)
+    select_model(p, None)
+    return p
+
+
+@pytest.fixture
+def exported_project(accepted_project):
+    export_model(accepted_project)
+    return accepted_project

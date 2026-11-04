@@ -21,10 +21,15 @@ deployment_targets:
     root: ./.fake-target
 
   # CamThink NeoEdge NG4511. `ssh_host` is an alias from ~/.ssh/config
-  # (hostname/IP, user, key, and host-key pinning live there).
+  # (hostname/IP, user, key, and host-key pinning live there). User-owned install root,
+  # no sudo; the vendor's own inference service is left untouched.
   ng4511-lab:
     type: camthink_ng4511
-    ssh_host: ng4511
-    install_root: /opt/camthink-ai
-    service_name: camthink-ai-inference
-    inference_source: "${NG4511_RTSP_URL:-}"
+    ssh_host: camthink-test
+    install_root: ~/camthink-ai
+    service_name: camthink-ai-inference      # systemd --user unit; set to null to disable
+    inference_source: "${NG4511_RTSP_URL:-}" # RTSP URL for the service; empty = loop over samples
+    trtexec: /usr/src/tensorrt/bin/trtexec
+    workspace_mb: 1024
+    build_timeout_s: 1800
+    fps_limit: 5

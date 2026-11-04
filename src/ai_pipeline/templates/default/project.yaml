@@ -64,6 +64,16 @@ deployment:
   acceptance:
     latency_ms_p50: { max: 60 }
     fps: { min: 15 }
+  inference:                        # written to the device as runtime.json
+    confidence: 0.25
+    iou: 0.45
+    max_detections: 300
+  smoke:
+    samples: 3                      # test-split images shipped with each deployment
+    min_detections: 1
+  benchmark:
+    iterations: 100
+    warmup: 20
   health:
     timeout_s: 120
     interval_s: 5

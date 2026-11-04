@@ -208,8 +208,27 @@ class ExportConfig(_Strict):
 
 
 class HealthConfig(_Strict):
+    # After activation the service needs time to load the engine; poll until healthy.
     timeout_s: float = Field(default=120, gt=0)
     interval_s: float = Field(default=5, gt=0)
+
+
+class InferenceConfig(_Strict):
+    """Runtime post-processing parameters, written to the device as runtime.json."""
+
+    confidence: float = Field(default=0.25, ge=0, le=1)
+    iou: float = Field(default=0.45, ge=0, le=1)
+    max_detections: int = Field(default=300, ge=1)
+
+
+class SmokeConfig(_Strict):
+    samples: int = Field(default=3, ge=1)  # test-split images shipped with the deployment
+    min_detections: int = Field(default=1, ge=0)
+
+
+class BenchmarkConfig(_Strict):
+    iterations: int = Field(default=100, ge=1)
+    warmup: int = Field(default=20, ge=0)
 
 
 class DeploymentConfig(_Strict):
@@ -217,6 +236,9 @@ class DeploymentConfig(_Strict):
     runtime: Literal["tensorrt"] = "tensorrt"
     precision: Literal["fp16", "fp32"] = "fp16"
     acceptance: dict[str, Rule] = Field(default_factory=dict)
+    inference: InferenceConfig = InferenceConfig()
+    smoke: SmokeConfig = SmokeConfig()
+    benchmark: BenchmarkConfig = BenchmarkConfig()
     health: HealthConfig = HealthConfig()
     keep_versions: int = Field(default=3, ge=1)
 
@@ -275,9 +297,15 @@ class FakeTargetConfig(_Strict):
 class CamThinkNG4511TargetConfig(_Strict):
     type: Literal["camthink_ng4511"]
     ssh_host: str
-    install_root: str = "/opt/camthink-ai"
-    service_name: str = "camthink-ai-inference"
-    inference_source: str = ""
+    install_root: str = "~/camthink-ai"  # user-owned; no sudo needed
+    service_name: str | None = "camthink-ai-inference"  # systemd --user unit; None = no service
+    inference_source: str = ""  # RTSP/video URL for the service; "" = loop over sample images
+    python: str = "python3"
+    trtexec: str = "/usr/src/tensorrt/bin/trtexec"
+    workspace_mb: int = Field(default=1024, ge=64)
+    build_timeout_s: int = Field(default=1800, ge=60)
+    fps_limit: float = Field(default=5.0, gt=0)
+    connect_timeout_s: int = Field(default=10, ge=1)
 
 
 DeploymentTargetConfig = Annotated[

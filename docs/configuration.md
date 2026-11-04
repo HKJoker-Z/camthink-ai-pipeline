@@ -33,12 +33,16 @@ deployment_targets:            # at least one
   fake:
     type: fake                 # fake | camthink_ng4511
     root: ./.fake-target       # simulated device directory (relative to this file)
-  ng4511-lab:                  # schema only until M5 (TARGET_NOT_IMPLEMENTED)
+  ng4511-lab:                  # see ng4511-deployment.md
     type: camthink_ng4511
-    ssh_host: ng4511           # alias in ~/.ssh/config (host, user, key, host-key pinning)
-    install_root: /opt/camthink-ai
-    service_name: camthink-ai-inference
-    inference_source: "${NG4511_RTSP_URL:-}"
+    ssh_host: camthink-test    # alias in ~/.ssh/config (host, user, key, host-key pinning)
+    install_root: ~/camthink-ai          # user-owned, no sudo
+    service_name: camthink-ai-inference  # systemd --user unit; null disables service management
+    inference_source: "${NG4511_RTSP_URL:-}"   # RTSP for the service; empty = loop over samples
+    trtexec: /usr/src/tensorrt/bin/trtexec
+    workspace_mb: 1024
+    build_timeout_s: 1800
+    fps_limit: 5
 ```
 
 ## `projects/<name>/project.yaml`
@@ -57,7 +61,7 @@ Created by `ai-pipeline project create <name>` from `ai_pipeline/templates/defau
 | `training` | `backend`, `epochs`, `image_size`, `batch_size`, `device`, `provider_args{}` | `backend` must exist in `infrastructure.yaml`; `device` ∈ `cpu` \| `auto` \| explicit GPU (`cuda`, `cuda:N`, `N`, `N,M`) — explicit GPU requests fail with `GPU_DEVICE_UNAVAILABLE` instead of falling back to CPU (see [training-server.md](training-server.md)); `provider_args` are passed through to the provider unvalidated (fake provider: `fake_metrics`, `fake_fail`, `fake_sleep_s`) |
 | `evaluation` | `split` (`val`/`test`), `metrics[]`, `acceptance{metric: {min,max}}`, `selection.primary_metric` | metrics must be known to the task module (`precision`, `recall`, `f1`, `mAP50`, `mAP50-95`); acceptance keys and `primary_metric` must be in `metrics`. All acceptance rules must pass for a model to become `ACCEPTED`; `primary_metric` ranks accepted models for `model select` |
 | `export` | `format` (`onnx`), `opset`, `image_size`, `dynamic`, `provider_args{}` | these form the export *request identity*: `export start` reuses a READY export with the same model, weights hash and params |
-| `deployment` | `target`, `runtime` (`tensorrt`), `precision` (`fp16`/`fp32`), `acceptance{}`, `health{timeout_s, interval_s}`, `keep_versions` | `target` must exist in `infrastructure.yaml`; acceptance keys ∈ `latency_ms_p50`, `latency_ms_p95`, `fps`, `memory_mb`, `gpu_util_pct` and gate *activation* (benchmark still runs and is persisted when empty). `health.*` and `keep_versions` are reserved for the real target (M5) |
+| `deployment` | `target`, `runtime` (`tensorrt`), `precision` (`fp16`/`fp32`), `acceptance{}`, `inference{confidence, iou, max_detections}`, `smoke{samples, min_detections}`, `benchmark{iterations, warmup}`, `health{timeout_s, interval_s}`, `keep_versions` | `target` must exist in `infrastructure.yaml`; acceptance keys ∈ `latency_ms_p50`, `latency_ms_p95`, `fps`, `memory_mb`, `gpu_util_pct` and gate *activation* (benchmark still runs and is persisted when empty); `inference` is written to the device as `runtime.json`; `smoke.samples` test-split images ship with each deployment; health is polled after activation until `timeout_s`; `keep_versions` reserved for a future `deploy prune` |
 
 An acceptance rule needs at least one of `min`/`max`. All rules must pass for a candidate to
 be accepted; `selection.primary_metric` picks among accepted candidates.

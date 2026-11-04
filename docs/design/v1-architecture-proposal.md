@@ -31,6 +31,10 @@ Status: **ACCEPTED for M0 (2026-11-03) with the topology decision below.**
   8–15 and 20–25 are *measured* (L4T R36.4.3 / JetPack 6.2, TensorRT 10.3, trtexec, Python
   3.10, rsync, 172 GB free, 7.4 GiB RAM, user `julian` without passwordless sudo, vendor
   service `camthink-detect-web.service` running) but their *implications* are decided in M5.
+- **M5 decision (2026-11-04):** build our own independent runtime (`camthink_edge`: Python +
+  numpy + device TensorRT bindings, ctypes libcudart) under a user-owned `~/camthink-ai` with a
+  `systemd --user` service; the vendor service is left untouched. Transfer via `scp`; no
+  pruning; deployment stays synchronous. See `docs/ng4511-deployment.md`.
 
 ```
 Human / future Grok Bot

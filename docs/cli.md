@@ -74,6 +74,8 @@ be verified from the envelope; structured job errors appear as `error.details.ca
 | `target verify <name> [--target t]` | reachability + environment of the target | 0, 1 (`TARGET_NOT_IMPLEMENTED`) |
 | `deploy start <name> [<mv>] [--export exp] [--target t]` | verify → stage → prepare → smoke → benchmark → policy → activate → health; synchronous, every phase persisted | 0 ACTIVE, 5 `POLICY_REJECTED`, 1 `DEPLOYMENT_FAILED` / `DEPLOYMENT_ROLLED_BACK` / `DEPLOYMENT_ROLLBACK_FAILED`, 3 preconditions (`NO_EXPORT`, `MODEL_REJECTED`, `MODEL_NOT_ACCEPTED`) |
 | `deploy status <name> [<dep>] [--full]` / `deploy list <name>` | inspect deployments (default: active) | 0 |
+| `deploy infer <name> <image>… [--deployment dep] [--target t]` | real inference on the target with the active (or given) deployment; detections + timings | 0, 1 (`IMAGE_NOT_FOUND`, remote errors) |
+| `target setup <name> [--target t]` | install/update the edge runtime bundle and the `systemd --user` service on the device (idempotent) | 0, 4 (`REMOTE_*`) |
 | `rollback <name> [--to dep]` | restore the previous known-good deployment; `--to` is also the recovery path after `ROLLBACK_FAILED` | 0, 3 (`NO_ACTIVE_DEPLOYMENT`, `NO_PREVIOUS_DEPLOYMENT`), 1 |
 | `health <name> [--target t]` | target health + consistency with `active_deployment` | 0, 1 (`UNHEALTHY`, `POINTER_MISMATCH`) |
 
@@ -114,7 +116,7 @@ verdicts (`acceptance`, `rollback`, `error.phase`) are readable without logs.
 | 1 | operation failed (including unexpected internal errors) |
 | 2 | usage or configuration error |
 | 3 | precondition / state error (not found, already exists, illegal transition) |
-| 4 | remote / connectivity error |
+| 4 | remote / connectivity error (`REMOTE_UNREACHABLE`, `REMOTE_COMMAND_FAILED`, `REMOTE_OPERATION_FAILED`, `REMOTE_TRANSFER_FAILED`, `REMOTE_TIMEOUT`) |
 | 5 | policy rejection (metrics below configured acceptance) |
 
 Codes 4 and 5 are defined now and used from M2/M3 onward.

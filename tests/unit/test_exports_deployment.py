@@ -5,10 +5,8 @@ import os
 from pathlib import Path
 
 import pytest
-from tests.conftest import make_image_set, write_yolo_labels
+from tests.conftest import export_model, make_image_set, write_yolo_labels  # noqa: F401
 
-from ai_pipeline.core.data.importer import import_images
-from ai_pipeline.core.dataset.build import build_dataset, plan_dataset
 from ai_pipeline.core.deployment import (
     health,
     list_deployments,
@@ -18,46 +16,15 @@ from ai_pipeline.core.deployment import (
 )
 from ai_pipeline.core.errors import ConfigError, OperationError, PolicyRejected, StateError
 from ai_pipeline.core.exports import start_export
-from ai_pipeline.core.labeling.labelsets import import_labels
 from ai_pipeline.core.project import Project
-from ai_pipeline.core.registry import select_model
 from ai_pipeline.core.runs import start_evaluation, start_training, wait_run
 from ai_pipeline.core.store import write_json_atomic
 from ai_pipeline.targets import get_target
 from ai_pipeline.targets.fake import DEFAULT_BENCHMARK, FakeTarget
 
 
-@pytest.fixture
-def accepted_project(demo_project: Project, tmp_path: Path) -> Project:
-    """Project with a fake provider, a READY dataset, an ACCEPTED + selected model."""
-    cfg = demo_project.config_path
-    cfg.write_text(cfg.read_text().replace("provider: ultralytics", "provider: fake"))
-    p = Project.load("demo", demo_project.settings)
-    src = tmp_path / "src"
-    imgs = make_image_set(src, 12)
-    write_yolo_labels(tmp_path / "labels", [i.stem for i in imgs])
-    import_images(p, [src])
-    import_labels(p, tmp_path / "labels", fmt="yolo")
-    build_dataset(p, plan_dataset(p))
-    run = wait_run(p, start_training(p)["run_id"], timeout_s=30)
-    wait_run(p, start_evaluation(p, run["model_version"])["run_id"], timeout_s=30)
-    select_model(p, None)
-    return p
-
-
 def _export(p: Project, mv: str | None = None, **kw):
-    run, existing = start_export(p, model_version=mv, **kw)
-    if existing is not None:
-        return existing
-    run = wait_run(p, run["run_id"], timeout_s=30)
-    assert run["state"] == "COMPLETED", run.get("error")
-    return p.store.read("exports", run["export_id"])
-
-
-@pytest.fixture
-def exported_project(accepted_project: Project) -> Project:
-    _export(accepted_project)
-    return accepted_project
+    return export_model(p, mv, **kw)
 
 
 def _target(p: Project) -> FakeTarget:
@@ -216,9 +183,10 @@ def test_fake_target_injection(tmp_path: Path):
 def test_target_factory(settings):
     t = get_target("fake", settings)
     assert isinstance(t, FakeTarget) and t.root == settings.infra_path.parent / ".fake-target"
-    with pytest.raises(OperationError) as ei:
-        get_target("ng4511-lab", settings)
-    assert ei.value.code == "TARGET_NOT_IMPLEMENTED"
+    from ai_pipeline.targets.camthink_ng4511 import CamThinkNG4511Target
+
+    ng = get_target("ng4511-lab", settings)
+    assert isinstance(ng, CamThinkNG4511Target) and ng.cfg.ssh_host == "ng4511"  # no SSH yet
     with pytest.raises(ConfigError):
         get_target("nope", settings)
 

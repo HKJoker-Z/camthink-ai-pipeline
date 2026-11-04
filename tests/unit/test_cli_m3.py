@@ -31,6 +31,8 @@ def _prepare_accepted(workspace: Path, tmp_path: Path) -> None:
         .replace("min_images: 20", "min_images: 4")
         .replace("min_instances_per_class: 10", "min_instances_per_class: 1")
         .replace("provider: ultralytics", "provider: fake")
+        .replace("timeout_s: 120", "timeout_s: 0.5")
+        .replace("interval_s: 5", "interval_s: 0.1")
     )
     invoke_json("data", "import", "demo", str(src))
     invoke_json("label", "import", "demo", str(tmp_path / "labels"))
@@ -207,11 +209,11 @@ def test_deploy_preconditions_json(workspace: Path, tmp_path: Path):
     assert r.exit_code == 3 and p["error"]["code"] == "NO_ACTIVE_DEPLOYMENT"
     r, p = invoke_json("export", "show", "demo", "exp-404")
     assert r.exit_code == 3 and p["error"]["code"] == "EXPORT_NOT_FOUND"
-    r, p = invoke_json("deploy", "start", "demo", "--target", "ng4511-lab")
+    r, p = invoke_json("deploy", "start", "demo", "--target", "nope")
     assert r.exit_code == 3  # no export yet is checked first
     invoke_json("export", "start", "demo", "--wait")
-    r, p = invoke_json("deploy", "start", "demo", "--target", "ng4511-lab")
-    assert r.exit_code == 1 and p["error"]["code"] == "TARGET_NOT_IMPLEMENTED"
+    r, p = invoke_json("deploy", "start", "demo", "--target", "nope")
+    assert r.exit_code == 2 and p["error"]["code"] == "TARGET_UNKNOWN"
 
 
 def test_human_output_m3(workspace: Path, tmp_path: Path):
