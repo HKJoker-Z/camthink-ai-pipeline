@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ai_pipeline.core.jobs.context import JobContext
+from ai_pipeline.providers.device import resolve_device
 
 # ultralytics results_dict keys -> task metric names
 _METRIC_KEYS = {
@@ -41,18 +42,11 @@ def _absolute_data_config(ctx: JobContext, data_config: Path) -> Path:
     return out
 
 
-def _device(params: dict[str, Any]) -> str:
-    """Honour the configured device but fall back to CPU when CUDA is unavailable, so the same
-    project config works on a CPU-only compute host (e.g. integration tests)."""
-    requested = str(params.get("device", "0"))
-    if requested == "cpu":
-        return "cpu"
-    try:
-        import torch
-
-        return requested if torch.cuda.is_available() else "cpu"
-    except Exception:  # pragma: no cover - torch always present with ultralytics
-        return "cpu"
+def _device(params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Strict device resolution (see providers.device): an explicit GPU request that cannot be
+    honoured raises GPU_DEVICE_UNAVAILABLE instead of silently using the CPU."""
+    info = resolve_device(params.get("device", "0"))
+    return info["used"], {"device": info}
 
 
 def _collect_metrics(results, classes: list[str]) -> dict[str, Any]:
@@ -117,7 +111,7 @@ class UltralyticsProvider:
         candidate = params["candidate"]
         classes = list(params.get("classes", []))
         data_config = _absolute_data_config(ctx, ctx.resolve(inputs["data_config"]))
-        device = _device(params)
+        device, env = _device(params)
         ctx.log.info("ultralytics train %s on %s device=%s", candidate, data_config, device)
         model = YOLO(candidate["weights"])
         extra = dict(params.get("provider_args") or {})
@@ -147,6 +141,7 @@ class UltralyticsProvider:
         return {
             "artifacts": {"weights": ctx.relpath(weights), "metrics": ctx.relpath(metrics_file)},
             "metrics": metrics,
+            "environment": env,
             "extra": {"save_dir": ctx.relpath(Path(model.trainer.save_dir))}
             if getattr(model, "trainer", None)
             else {},
@@ -160,7 +155,7 @@ class UltralyticsProvider:
         weights = ctx.resolve(inputs["weights"])
         data_config = _absolute_data_config(ctx, ctx.resolve(inputs["data_config"]))
         split = inputs.get("split", "test")
-        device = _device(params)
+        device, env = _device(params)
         ctx.log.info("ultralytics val %s split=%s device=%s", weights, split, device)
         model = YOLO(str(weights))
         results = model.val(
@@ -179,7 +174,11 @@ class UltralyticsProvider:
         metrics["split"] = split
         metrics_file = ctx.out_dir / "metrics.json"
         metrics_file.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
-        return {"artifacts": {"metrics": ctx.relpath(metrics_file)}, "metrics": metrics}
+        return {
+            "artifacts": {"metrics": ctx.relpath(metrics_file)},
+            "metrics": metrics,
+            "environment": env,
+        }
 
     def export(
         self, ctx: JobContext, *, inputs: dict[str, Any], params: dict[str, Any]
@@ -196,12 +195,14 @@ class UltralyticsProvider:
         local_weights = ctx.out_dir / "source.pt"
         shutil.copyfile(src, local_weights)
         model = YOLO(str(local_weights))
+        # ONNX export is a graph conversion; it runs on the CPU by design and is recorded as such.
+        device, env = _device({"device": "cpu"})
         exported = model.export(
             format="onnx",
             imgsz=int(params.get("image_size", 640)),
             opset=int(params.get("opset", 17)),
             dynamic=bool(params.get("dynamic", False)),
-            device="cpu",
+            device=device,
             verbose=False,
             **dict(params.get("provider_args") or {}),
         )
@@ -223,7 +224,7 @@ class UltralyticsProvider:
             extra["outputs"] = [o.name for o in m.graph.output]
         except Exception:  # the onnx package is used for inspection only
             pass
-        return {"artifacts": {"model": ctx.relpath(out)}, "extra": extra}
+        return {"artifacts": {"model": ctx.relpath(out)}, "environment": env, "extra": extra}
 
     def autolabel(
         self, ctx: JobContext, *, inputs: dict[str, Any], params: dict[str, Any]
@@ -235,7 +236,7 @@ class UltralyticsProvider:
             if ln.strip()
         ]
         conf = float(params.get("confidence", 0.25))
-        device = _device(params)
+        device, env = _device(params)
         model = YOLO(params["weights"])
         names = model.names  # {idx: name}
         out = ctx.out_dir / "detections.jsonl"
@@ -274,5 +275,6 @@ class UltralyticsProvider:
         return {
             "artifacts": {"detections": ctx.relpath(out)},
             "metrics": {"images": len(images), "detections": n},
+            "environment": env,
             "extra": {"source_classes": [names[i] for i in sorted(names)]},
         }

@@ -31,6 +31,7 @@ def run_result(run: dict[str, Any]) -> dict[str, Any]:
         "timestamps": run["timestamps"],
         "progress": run.get("progress") or {},
         "metrics": {k: v for k, v in (run.get("metrics") or {}).items() if k != "per_class"},
+        "environment": run.get("environment") or {},
         "outputs": run.get("outputs") or {},
         "model_version": run.get("model_version"),
         "label_set_id": run.get("label_set_id"),
@@ -49,6 +50,12 @@ def run_text(run: dict[str, Any]) -> str:
     metrics = {k: v for k, v in (run.get("metrics") or {}).items() if k != "per_class"}
     if metrics:
         lines.append(f"  metrics: {metrics}")
+    dev = (run.get("environment") or {}).get("device")
+    if isinstance(dev, dict):
+        lines.append(
+            f"  device: requested={dev.get('requested')} used={dev.get('used')} "
+            f"({dev.get('policy')}; cuda_available={dev.get('cuda_available')})"
+        )
     if run.get("model_version"):
         lines.append(f"  model_version: {run['model_version']}")
     if run.get("label_set_id"):
@@ -73,8 +80,13 @@ def run_envelope(project: Project, run: dict[str, Any], operation: str) -> Envel
         error = {
             "code": status_code,
             "message": f"{err.get('type', state.value)}: {err.get('message', '')}".strip(": "),
-            "details": {"run_id": run["run_id"], "log_tail": err.get("log_tail")},
-            "hint": f"See `run logs {project.name} {run['run_id']}`.",
+            "details": {
+                "run_id": run["run_id"],
+                "cause": err.get("code"),  # structured code raised inside the job, if any
+                **(err.get("details") or {}),
+                "log_tail": err.get("log_tail"),
+            },
+            "hint": err.get("hint") or f"See `run logs {project.name} {run['run_id']}`.",
         }
     return Envelope(
         operation=operation,

@@ -1,9 +1,15 @@
-"""Real ultralytics provider through the real job runner, on CPU.
+"""Real ultralytics provider through the real job runner.
 
 Opt-in: needs the `provider-ultralytics` extra (torch + ultralytics) in the interpreter that
 runs the jobs and network access for the pretrained weights. Skipped otherwise.
 
     AIP_ML_PYTHON=/path/to/venv-ml/bin/python pytest -m slow tests/integration
+
+On the AI server this is also the M4 GPU acceptance check:
+
+    AIP_TEST_DEVICE=0 AIP_ML_PYTHON=... pytest -m slow tests/integration
+
+With an explicit GPU device the test asserts that the run metadata proves CUDA execution.
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ from ai_pipeline.core.runs import start_autolabel, start_evaluation, start_train
 from tests.conftest import make_image_set, write_yolo_labels
 
 pytestmark = pytest.mark.slow
+DEVICE = os.environ.get("AIP_TEST_DEVICE", "cpu")
 
 
 def _ml_python() -> str | None:
@@ -58,7 +65,7 @@ def test_ultralytics_train_evaluate_autolabel_on_cpu(workspace: Path, tmp_path: 
         .replace("epochs: 5", "epochs: 1")
         .replace("image_size: 640", "image_size: 64")
         .replace("batch_size: 16", "batch_size: 8")
-        .replace('device: "0"', 'device: "cpu"')
+        .replace('device: "0"', f'device: "{DEVICE}"')
     )
     p = Project.load("demo", settings)
 
@@ -72,6 +79,15 @@ def test_ultralytics_train_evaluate_autolabel_on_cpu(workspace: Path, tmp_path: 
     run = wait_run(p, start_training(p)["run_id"], timeout_s=900)
     assert run["state"] == "COMPLETED", run.get("error")
     assert run["environment"]["ultralytics"] and run["environment"]["torch"]
+    dev = run["environment"]["device"]
+    assert dev["requested"] == DEVICE
+    if DEVICE == "cpu":
+        assert dev["used"] == "cpu" and dev["policy"] == "explicit-cpu"
+    else:  # GPU acceptance: the metadata must prove CUDA execution, not a silent fallback
+        assert dev["policy"] == "explicit-gpu" and dev["used"] != "cpu"
+        assert dev["cuda_available"] is True and dev["device_count"] >= 1
+        assert dev["device_names"] and run["environment"]["cuda_available"] is True
+        assert run["environment"]["gpu"]
     assert set(run["metrics"]) >= {"precision", "recall", "mAP50", "mAP50-95", "f1", "per_class"}
     weights = p.settings.artifact_root / run["outputs"]["weights"]
     assert weights.is_file() and weights.stat().st_size > 1_000_000
@@ -107,4 +123,53 @@ def test_ultralytics_train_evaluate_autolabel_on_cpu(workspace: Path, tmp_path: 
     train_dir = p.settings.artifact_root / run["outputs"]["weights"]
     assert not train_dir.with_suffix(".onnx").exists(), "export must not write into the train run"
 
+    shutil.rmtree(p.artifact_dir, ignore_errors=True)
+
+
+@pytest.mark.skipif(_ml_python() is None, reason="ultralytics not installed (set AIP_ML_PYTHON)")
+def test_explicit_gpu_request_fails_loudly_without_cuda(workspace: Path, tmp_path: Path):
+    """On a CPU-only host, training with device "0" must FAIL with GPU_DEVICE_UNAVAILABLE."""
+    import subprocess
+
+    probe = subprocess.run(
+        [_ml_python(), "-c", "import torch; print(int(torch.cuda.is_available()))"],
+        capture_output=True,
+        text=True,
+    )
+    if probe.stdout.strip() == "1":
+        pytest.skip("CUDA is available here; the strict-failure path needs a CPU-only host")
+
+    infra = workspace / "infrastructure.yaml"
+    infra.write_text(
+        infra.read_text().replace(
+            "  local:\n    type: local\n",
+            f"  local:\n    type: local\n    python: {_ml_python()}\n",
+        )
+    )
+    from ai_pipeline.core.settings import Settings
+
+    settings = Settings.resolve(cwd=workspace)
+    p = Project.create("demo", settings)
+    cfg = p.config_path
+    cfg.write_text(
+        cfg.read_text()
+        .replace("min_images: 20", "min_images: 4")
+        .replace("min_instances_per_class: 10", "min_instances_per_class: 1")
+        .replace("epochs: 5", "epochs: 1")
+    )  # device stays "0" (explicit GPU)
+    p = Project.load("demo", settings)
+    src = tmp_path / "src"
+    imgs = make_image_set(src, 12)
+    write_yolo_labels(tmp_path / "labels", [i.stem for i in imgs])
+    import_images(p, [src])
+    import_labels(p, tmp_path / "labels", fmt="yolo")
+    build_dataset(p, plan_dataset(p))
+
+    run = wait_run(p, start_training(p)["run_id"], timeout_s=300)
+    assert run["state"] == "FAILED"
+    assert run["error"]["code"] == "GPU_DEVICE_UNAVAILABLE", run["error"]
+    assert run["error"]["details"]["requested"] == "0"
+    assert run["error"]["details"]["cuda_available"] is False
+    assert "nvidia-smi" in run["error"]["hint"]
+    assert run["model_version"] is None and p.store.count("models") == 0
     shutil.rmtree(p.artifact_dir, ignore_errors=True)

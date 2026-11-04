@@ -17,6 +17,7 @@ import traceback
 from pathlib import Path
 
 from ai_pipeline import __version__
+from ai_pipeline.core.errors import PipelineError
 from ai_pipeline.core.ids import utc_now_iso
 from ai_pipeline.core.jobs.context import JobContext
 from ai_pipeline.core.jobs.spec import (
@@ -78,13 +79,15 @@ def execute(spec: JobSpec, ctx: JobContext, provider) -> JobResult:
         out = provider.export(ctx, inputs=spec.inputs, params=spec.params)
     else:  # pragma: no cover - JobSpec validation prevents this
         raise ValueError(f"unknown job kind {kind!r}")
+    environment = _environment(provider)
+    environment.update(out.get("environment") or {})  # e.g. resolved device per operation
     return JobResult(
         run_id=spec.run_id,
         kind=kind,
         provider=provider.name,
         artifacts=out.get("artifacts", {}),
         metrics=out.get("metrics", {}),
-        environment=_environment(provider),
+        environment=environment,
         extra=out.get("extra", {}),
     )
 
@@ -122,6 +125,8 @@ def run_job(job_dir: Path) -> int:
             "message": str(exc),
             "traceback": traceback.format_exc(),
         }
+        if isinstance(exc, PipelineError):  # keep structured code/details/hint for the CLI
+            status.error.update({"code": exc.code, "details": exc.details, "hint": exc.hint})
         write_status(job_dir, status)
         log.error("job %s failed: %s: %s", spec.run_id, type(exc).__name__, exc)
         log.debug("%s", status.error["traceback"])

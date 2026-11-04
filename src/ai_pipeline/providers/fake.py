@@ -21,7 +21,21 @@ class FakeProvider:
     name = "fake"
 
     def describe_environment(self) -> dict[str, Any]:
-        return {"provider_version": "fake-1", "device": "cpu"}
+        return {"provider_version": "fake-1", "cuda_available": False, "gpu": None}
+
+    @staticmethod
+    def _device_env(params: dict[str, Any]) -> dict[str, Any]:
+        """Same shape as providers.device.resolve_device, so run metadata is uniform."""
+        return {
+            "device": {
+                "requested": str(params.get("device", "cpu")),
+                "used": "cpu",
+                "policy": "fake-cpu",
+                "cuda_available": False,
+                "device_count": 0,
+                "device_names": [],
+            }
+        }
 
     # -- helpers ----------------------------------------------------------------------
 
@@ -88,6 +102,7 @@ class FakeProvider:
         return {
             "artifacts": {"weights": ctx.relpath(weights), "metrics": ctx.relpath(metrics_file)},
             "metrics": metrics,
+            "environment": self._device_env(params),
             "extra": {"epochs_completed": epochs},
         }
 
@@ -105,7 +120,11 @@ class FakeProvider:
         metrics["split"] = inputs.get("split", "test")
         metrics_file = ctx.out_dir / "metrics.json"
         metrics_file.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
-        return {"artifacts": {"metrics": ctx.relpath(metrics_file)}, "metrics": metrics}
+        return {
+            "artifacts": {"metrics": ctx.relpath(metrics_file)},
+            "metrics": metrics,
+            "environment": self._device_env(params),
+        }
 
     def export(
         self, ctx: JobContext, *, inputs: dict[str, Any], params: dict[str, Any]

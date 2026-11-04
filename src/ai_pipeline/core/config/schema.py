@@ -155,13 +155,25 @@ class ModelConfig(_Strict):
         return v
 
 
+DEVICE_RE = re.compile(r"^(cpu|auto|cuda|cuda:\d+(,\d+)*|\d+(,\d+)*)$")
+
+
 class TrainingConfig(_Strict):
     backend: str
     epochs: int = Field(ge=1)
     image_size: int = Field(default=640, ge=32)
     batch_size: int = Field(default=16, ge=1)
+    # "cpu" | "auto" | explicit GPU ("cuda", "cuda:N", "N", "N,M"). Explicit GPU requests
+    # never fall back to CPU (see providers.device).
     device: str = "0"
     provider_args: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("device")
+    @classmethod
+    def _device_format(cls, v: str) -> str:
+        if not DEVICE_RE.match(v.strip().lower()):
+            raise ValueError('must be "cpu", "auto", "cuda", "cuda:N", "N" or "N,M"')
+        return v.strip()
 
 
 class SelectionConfig(_Strict):
