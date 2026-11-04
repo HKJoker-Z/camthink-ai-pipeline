@@ -18,7 +18,7 @@ dataset:
   validation:
     min_images: 20
     min_instances_per_class: 10
-    max_empty_label_ratio: 0.5
+    max_empty_label_ratio: 0.7     # COCO128 sample: ~40% of images contain a person
     fail_on_warnings: false
 
 labeling:
@@ -36,7 +36,7 @@ model:
 
 training:
   backend: local
-  epochs: 5
+  epochs: 20                        # pretrained head is re-initialised for the new class list
   image_size: 640
   batch_size: 16
   device: "0"
