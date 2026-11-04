@@ -39,6 +39,13 @@ Status: **ACCEPTED for M0 (2026-11-03) with the topology decision below.**
   TensorRT FP16 build (508 s), smoke, benchmark (p50 7.67 ms, 121 fps, RSS 361 MB), policy,
   activation, health, real inference, supersede and rollback all verified. All §29 V1 success
   criteria are met by the demo project; §25 items 8–15 and 20–25 are resolved.
+- **M6 / V1 complete (2026-11-04):** the full lifecycle was executed on the real AI server and
+  NG4511 for two *new* projects created from the CLI and configured only through
+  `project.yaml` (`v1_person`: 1 class, auto-labels; `v1_wildlife`: 4 classes, imported
+  labels) — criterion §29.18 (reuse by configuration) proven. Added: device-unique deployment
+  names (`<project>-<dep>`), TensorRT engine reuse for identical exports, `docs/operator-guide.md`
+  (basis for the future automation-agent skill). Pending: real-camera RTSP verification,
+  `deploy prune`, cross-project SUPERSEDED marking, Grok Bot integration (explicitly out of V1).
 
 ```
 Human / future Grok Bot

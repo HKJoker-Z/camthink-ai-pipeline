@@ -171,6 +171,25 @@ ONNX sha + precision + TensorRT version is a candidate M6 improvement. The faile
 (pre-fix stage error) left `~/camthink-ai/deployments/dep-001/` (ONNX + samples, no engine) on
 the device; it is harmless and can be removed by hand — there is no automatic pruning in V1.
 
+## M6 V1 acceptance result (two new projects created by CLI, 2026-11-04)
+
+| | `v1_person` (COCO128, `label auto`) | `v1_wildlife` (african-wildlife, `label import`) |
+|---|---|---|
+| classes | person | buffalo, elephant, rhino, zebra |
+| assets / annotations | 128 / 151 (72 background) | 1463 unique of 1501 files (content dedup) / 2685 |
+| dataset | `ds-v001` hash `ed40ff6d…` (identical to the M5 demo — deterministic identity), split 102/13/13 | `ds-v001` hash `7b48fb90…`, split 1171/146/146 |
+| training (GPU 0, explicit-gpu, torch 2.15+cu132) | 20 epochs, mAP50 0.942 / mAP50-95 0.643 | 15 epochs, mAP50 0.950 / mAP50-95 0.785 |
+| evaluation (test) | mAP50 0.923 → ACCEPTED | mAP50 0.944 → ACCEPTED |
+| export | `exp-001` ONNX 10.66 MB | `exp-001` ONNX 10.67 MB |
+| deploy A | engine 8.76 MB built in 528 s (peak RSS 1.68 GB); p50 6.97 ms / p95 10.67 ms / 131 fps; RSS 356 MB; GPU 79 % mean; ACTIVE, healthy, service 5.0 fps | engine 8.61 MB built in 526 s; p50 7.12 ms / 125 fps; RSS 353 MB; ACTIVE, healthy |
+| real inference | 1 person (0.62) on 8 images, 13.8 ms/img after warm-up | 10 detections on 8 images (buffalo 0.84–0.94, one rhino), 13.9 ms/img |
+| deploy B | **engine reused from `v1_person-dep-001`, prepare 0 s**, 120 fps, ACTIVE | **reused from `v1_wildlife-dep-001`, prepare 0 s**, 128 fps, ACTIVE |
+| rollback | dep-002 → ROLLED_BACK, dep-001 ACTIVE, healthy, pointers consistent | same |
+
+No pipeline source was modified between the two runs; the second project differed only in
+its `project.yaml` (overlay). Deploying `v1_wildlife` superseded `v1_person` on the device as
+documented.
+
 ## RTSP / camera input
 
 `serve --source <rtsp-url>` reads frames with OpenCV (GStreamer backend present on the device)

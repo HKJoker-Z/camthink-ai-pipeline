@@ -22,9 +22,11 @@ acceptance, model registry (M2); ONNX export as a job, first-class deployments w
 policy, activation, automatic rollback and a fake target (M3); validated on the real AI server
 with GPU training, evaluation and ONNX export (M4, see
 [docs/training-server.md](docs/training-server.md)); own TensorRT inference runtime deployed,
-benchmarked (7.7 ms p50 / 121 fps FP16 on the Orin Nano) and rolled back on the real NG4511
-(M5, see [docs/ng4511-deployment.md](docs/ng4511-deployment.md)). The full V1 lifecycle is
-proven end to end. See
+benchmarked (≈7 ms p50 / 120+ fps FP16 on the Orin Nano) and rolled back on the real NG4511
+(M5, see [docs/ng4511-deployment.md](docs/ng4511-deployment.md)); **V1 complete** — the whole
+lifecycle was run for two freshly created projects (1-class person, 4-class wildlife) through
+the CLI alone with no code changes (M6). Operators and future automation start at
+[docs/operator-guide.md](docs/operator-guide.md). See
 [`docs/design/v1-architecture-proposal.md`](docs/design/v1-architecture-proposal.md).
 
 ## Install
