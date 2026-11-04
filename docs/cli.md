@@ -60,7 +60,10 @@ Logs always go to **stderr**; stdout carries only the command's output.
 | `model select <name> [<mv>]` | set `selected_model_version` (explicit must be accepted; implicit = best accepted by `selection.primary_metric`) | 0, 3 (`MODEL_NOT_ACCEPTED`, `NO_ACCEPTED_MODEL`) |
 
 Run commands return `status: failed` with the run record in `result` when the run itself
-FAILED/CANCELLED, so the agent gets the error, timestamps and log pointer in one call.
+FAILED/CANCELLED, so the agent gets the error, timestamps and log pointer in one call. The
+`result.environment` block (torch/CUDA/GPU, resolved `device`) is included so GPU execution can
+be verified from the envelope; structured job errors appear as `error.details.cause`
+(e.g. `GPU_DEVICE_UNAVAILABLE`).
 
 ### Export and deployment (M3) — see [deployment.md](deployment.md)
 

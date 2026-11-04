@@ -19,6 +19,12 @@ Status: **ACCEPTED for M0 (2026-11-03) with the topology decision below.**
   phase machine, and the TensorRT engine is target-owned (recorded on the Deployment). This
   supersedes the `EXPORTED/BENCHMARKED/DEPLOYED/SUPERSEDED` model states in §11.1/§12 and
   §16 of the brief. See `docs/deployment.md`.
+- **M4 redefined (2026-11-04):** M4 = *real AI-server validation* with the `local` compute
+  backend (ControlHost == ComputeHost). The `ssh` backend stays schema/design-only and is not
+  implemented unless a separate compute machine appears. Explicit GPU requests must fail
+  (`GPU_DEVICE_UNAVAILABLE`) instead of falling back to CPU. Deployment stays synchronous for
+  V1; `scp` is the M5 transfer baseline; deployment pruning is deferred to an explicit
+  `deploy prune` with protections. See `docs/training-server.md`.
 
 ```
 Human / future Grok Bot

@@ -48,7 +48,9 @@ Every path inside these files is relative to the job directory or absolute on th
 1. write `status.json` `RUNNING` with `pid`/`hostname`;
 2. `load_provider(spec.provider)` and dispatch on `spec.kind`;
 3. on success: write `out/result.json`, then `status.json` `COMPLETED` (`result_file` set);
-4. on any exception: `status.json` `FAILED` with `error.type/message/traceback`, exit 1.
+4. on any exception: `status.json` `FAILED` with `error.type/message/traceback`, exit 1; for
+   `PipelineError`s the structured `code`, `details` and `hint` are kept too (e.g.
+   `GPU_DEVICE_UNAVAILABLE`) and surface in `run status` as `error.details.cause`.
 
 Providers may call `ctx.report_progress(epoch=3, total_epochs=5)`; it merges into
 `status.progress` while RUNNING.
@@ -92,7 +94,9 @@ Providers may call `ctx.report_progress(epoch=3, total_epochs=5)`; it merges int
               "per_class": {...}},
   "environment": {"python": "3.12.3", "platform": "…", "hostname": "…", "ai_pipeline": "…",
                   "provider": "ultralytics", "ultralytics": "8.4.199", "torch": "2.15.0+cpu",
-                  "cuda": null, "cuda_available": false},
+                  "cuda": null, "cuda_available": false, "gpu": null,
+                  "device": {"requested": "cpu", "used": "cpu", "policy": "explicit-cpu",
+                             "cuda_available": false, "device_count": 0, "device_names": []}},
   "handle": {"pid": 1234, "python": "/…/bin/python", "backend": "local"},
   "error": null,
   "model_version": "mv-002", "label_set_id": null,
@@ -194,7 +198,7 @@ Nothing is built or merged: the new set is simply the latest READY label set, so
 | name | module | notes |
 |---|---|---|
 | `fake` | `ai_pipeline.providers.fake` | deterministic; `provider_args.fake_metrics / fake_fail / fake_sleep_s` for tests; `export` writes a fake `model.onnx` |
-| `ultralytics` | `ai_pipeline.providers.ultralytics` | YOLO; writes a job-local `data.resolved.yaml` with an absolute dataset path because ultralytics resolves `path:` against the CWD; falls back to CPU when CUDA is unavailable; `export` works on a job-local copy of the weights |
+| `ultralytics` | `ai_pipeline.providers.ultralytics` | YOLO; writes a job-local `data.resolved.yaml` with an absolute dataset path because ultralytics resolves `path:` against the CWD; **strict device policy** via `providers.device.resolve_device` (explicit GPU → `GPU_DEVICE_UNAVAILABLE` rather than CPU fallback; `auto` opts into fallback; export always runs on CPU); `export` works on a job-local copy of the weights |
 
 Install the ultralytics extra only in the job interpreter:
 `pip install -e '.[provider-ultralytics]'` and point `compute_backends.local.python` at it.

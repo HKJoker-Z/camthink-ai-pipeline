@@ -19,8 +19,9 @@ core knows about datasets, runs, models, deployments — never about specific ob
 canonical annotations, deterministic dataset versions (M1); jobs executed by a compute backend
 through a model provider, run tracking, auto-labeling, evaluation with project-defined
 acceptance, model registry (M2); ONNX export as a job, first-class deployments with benchmark
-policy, activation, automatic rollback and a fake target (M3). Real AI-server and NG4511
-integration are M4/M5. See
+policy, activation, automatic rollback and a fake target (M3). M4 (real AI-server validation,
+strict GPU policy, setup docs) is in progress — see [docs/training-server.md](docs/training-server.md);
+NG4511 integration is M5. See
 [`docs/design/v1-architecture-proposal.md`](docs/design/v1-architecture-proposal.md).
 
 ## Install
@@ -68,6 +69,7 @@ projects refer to. Generated state lives under `artifacts/` (gitignored).
 - [docs/datasets.md](docs/datasets.md) — asset store, annotation schema, validation rules, split and hash
 - [docs/runs-and-models.md](docs/runs-and-models.md) — jobs, backends, providers, runs, registry, evaluation policy
 - [docs/deployment.md](docs/deployment.md) — exports, deployment targets, deployment state machine, rollback
+- [docs/training-server.md](docs/training-server.md) — AI server inspection, setup, strict GPU policy, M4 acceptance
 - [docs/design/v1-architecture-proposal.md](docs/design/v1-architecture-proposal.md) — full design, milestones, open items
 
 ## Development
