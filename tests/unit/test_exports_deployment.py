@@ -229,15 +229,16 @@ def test_deploy_success_path(exported_project: Project):
         "latency_ms_p50",
     }
     assert rec["activation"]["previous"] is None and rec["health"]["healthy"]
+    assert rec["target_ref"] == "demo-dep-001"
     assert rec["previous_deployment"] is None and rec["rollback"] is None and rec["error"] is None
     assert rec["timestamps"]["finished"]
     assert p.pointers()["active_deployment"] == "dep-001"
     assert p.pointers()["last_known_good_deployment"] == "dep-001"
     assert p.store.read("models", "mv-001")["deployments"] == ["dep-001"]
     assert p.store.read("models", "mv-001")["state"] == "ACCEPTED"  # untouched
-    assert _target(p).current() == "dep-001"
+    assert _target(p).current() == "demo-dep-001"
     h = health(p)
-    assert h["healthy"] and h["consistent"] and h["target_current"] == "dep-001"
+    assert h["healthy"] and h["consistent"] and h["target_current"] == "demo-dep-001"
     raise_for_state(rec)  # no exception
 
 
@@ -246,10 +247,10 @@ def test_second_deployment_supersedes_and_manual_rollback(exported_project: Proj
     d1 = start_deployment(p)
     d2 = start_deployment(p)
     assert d2["deployment_id"] == "dep-002" and d2["state"] == "ACTIVE"
-    assert d2["previous_deployment"] == "dep-001" and d2["activation"]["previous"] == "dep-001"
+    assert d2["previous_deployment"] == "dep-001" and d2["activation"]["previous"] == "demo-dep-001"
     assert p.store.read("deployments", "dep-001")["state"] == "SUPERSEDED"
     assert p.pointers()["active_deployment"] == "dep-002"
-    assert _target(p).current() == "dep-002"
+    assert _target(p).current() == "demo-dep-002"
 
     rb = rollback_deployment(p)
     assert rb["deployment_id"] == "dep-002" and rb["state"] == "ROLLED_BACK"
@@ -258,7 +259,7 @@ def test_second_deployment_supersedes_and_manual_rollback(exported_project: Proj
     assert p.store.read("deployments", "dep-001")["state"] == "ACTIVE"
     assert p.pointers()["active_deployment"] == "dep-001"
     assert p.pointers()["last_known_good_deployment"] == "dep-001"
-    assert _target(p).current() == "dep-001"
+    assert _target(p).current() == "demo-dep-001"
     assert d1["deployment_id"] == "dep-001"
     with pytest.raises(StateError) as ei:
         rollback_deployment(p)  # dep-001 has no previous
@@ -334,7 +335,7 @@ def test_failure_before_activation_leaves_active_untouched(exported_project: Pro
     # active deployment and target pointer untouched
     assert p.pointers()["active_deployment"] == "dep-001"
     assert p.store.read("deployments", "dep-001")["state"] == "ACTIVE"
-    assert _target(p).current() == "dep-001"
+    assert _target(p).current() == "demo-dep-001"
     with pytest.raises(OperationError) as ei:
         raise_for_state(bad)
     assert ei.value.code == "DEPLOYMENT_FAILED" and ei.value.exit_code == 1
@@ -362,7 +363,7 @@ def test_policy_rejection_does_not_activate(exported_project: Project):
     assert rej["error"]["code"] == "POLICY_REJECTED" and rej["activation"] is None
     assert rej["rollback"] is None
     assert p.pointers()["active_deployment"] == "dep-001"
-    assert _target(p).current() == "dep-001"
+    assert _target(p).current() == "demo-dep-001"
     with pytest.raises(PolicyRejected) as ei:
         raise_for_state(rej)
     assert ei.value.exit_code == 5
@@ -376,19 +377,19 @@ def test_policy_rejection_does_not_activate(exported_project: Project):
 def test_health_failure_rolls_back_to_previous(exported_project: Project):
     p = exported_project
     start_deployment(p)
-    _inject(p, health_fail_for=["dep-002"])
+    _inject(p, health_fail_for=["demo-dep-002"])
     bad = start_deployment(p)
     assert bad["deployment_id"] == "dep-002" and bad["state"] == "ROLLED_BACK"
     phases = [ph["state"] for ph in bad["phases"]]
     assert phases[-4:] == ["ACTIVATING", "HEALTH_CHECKING", "ROLLING_BACK", "ROLLED_BACK"]
-    assert bad["activation"]["previous"] == "dep-001" and bad["health"]["healthy"] is False
+    assert bad["activation"]["previous"] == "demo-dep-001" and bad["health"]["healthy"] is False
     assert bad["error"]["code"] == "HEALTH_CHECK_FAILED"
     rb = bad["rollback"]
     assert rb["trigger"] == "automatic" and rb["to"] == "dep-001" and rb["health"]["healthy"]
     assert p.store.read("deployments", "dep-001")["state"] == "ACTIVE"
     assert p.pointers()["active_deployment"] == "dep-001"
     assert p.pointers()["last_known_good_deployment"] == "dep-001"
-    assert _target(p).current() == "dep-001"
+    assert _target(p).current() == "demo-dep-001"
     with pytest.raises(OperationError) as ei:
         raise_for_state(bad)
     assert ei.value.code == "DEPLOYMENT_ROLLED_BACK"
@@ -401,12 +402,12 @@ def test_activation_failure_rolls_back(exported_project: Project):
     bad = start_deployment(p)
     assert bad["state"] == "ROLLED_BACK" and bad["error"]["phase"] == "activate"
     assert bad["rollback"]["to"] == "dep-001"
-    assert p.pointers()["active_deployment"] == "dep-001" and _target(p).current() == "dep-001"
+    assert p.pointers()["active_deployment"] == "dep-001" and _target(p).current() == "demo-dep-001"
 
 
 def test_first_deployment_health_failure_rolls_back_to_nothing(exported_project: Project):
     p = exported_project
-    _inject(p, health_fail_for=["dep-001"])
+    _inject(p, health_fail_for=["demo-dep-001"])
     bad = start_deployment(p)
     assert bad["state"] == "ROLLED_BACK" and bad["rollback"]["to"] is None
     assert p.pointers()["active_deployment"] is None
@@ -417,11 +418,11 @@ def test_first_deployment_health_failure_rolls_back_to_nothing(exported_project:
 def test_rollback_failure_is_explicit(exported_project: Project):
     p = exported_project
     start_deployment(p)
-    _inject(p, fail="rollback", health_fail_for=["dep-002"])
+    _inject(p, fail="rollback", health_fail_for=["demo-dep-002"])
     bad = start_deployment(p)
     assert bad["state"] == "ROLLBACK_FAILED"
     assert bad["rollback"]["error"]["code"] == "TARGET_ROLLBACK_FAILED"
-    assert bad["rollback"]["target_current"] == "dep-002"  # what the target actually shows
+    assert bad["rollback"]["target_current"] == "demo-dep-002"  # what the target actually shows
     # we refuse to claim anything is active; last known good is preserved for recovery
     assert p.pointers()["active_deployment"] is None
     assert p.pointers()["last_known_good_deployment"] == "dep-001"
@@ -439,7 +440,7 @@ def test_rollback_failure_is_explicit(exported_project: Project):
     assert ei.value.code == "NO_ACTIVE_DEPLOYMENT"
     restored = rollback_deployment(p, to="dep-001")
     assert restored["deployment_id"] == "dep-001" and restored["state"] == "ACTIVE"
-    assert p.pointers()["active_deployment"] == "dep-001" and _target(p).current() == "dep-001"
+    assert p.pointers()["active_deployment"] == "dep-001" and _target(p).current() == "demo-dep-001"
     assert p.store.read("deployments", "dep-002")["state"] == "ROLLBACK_FAILED"  # history kept
 
 
@@ -466,8 +467,8 @@ def test_records_are_never_overwritten(exported_project: Project):
     assert p.store.read("deployments", "dep-002")["benchmark"]["metrics"]["fps"] == 1.0
     assert p.store.read("models", "mv-001")["deployments"] == ["dep-001", "dep-002", "dep-003"]
     assert (
-        json.loads((_target(p).root / "deployments" / "dep-002" / "deployment.json").read_text())[
-            "deployment_id"
-        ]
+        json.loads(
+            (_target(p).root / "deployments" / "demo-dep-002" / "deployment.json").read_text()
+        )["deployment_id"]
         == "dep-002"
     )

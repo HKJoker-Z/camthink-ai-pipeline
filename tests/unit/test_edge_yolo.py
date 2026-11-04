@@ -164,3 +164,88 @@ def test_health_without_current(tmp_path, capsys):
     assert (
         rc == 0 and out["healthy"] is False and out["details"]["reason"] == "no active deployment"
     )
+
+
+def test_build_reuses_identical_engine_without_trtexec(tmp_path, monkeypatch):
+    """Engine cache: same ONNX sha + precision + TensorRT version -> copy, no trtexec run."""
+    import hashlib
+    import sys
+    import types
+
+    from camthink_edge import ops
+
+    trt = types.ModuleType("tensorrt")
+    trt.__version__ = "10.3.0"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "tensorrt", trt)
+
+    deployments = tmp_path / "deployments"
+    old = deployments / "demo-dep-001"
+    old.mkdir(parents=True)
+    onnx_bytes = b"onnx-model-bytes"
+    (old / "model.onnx").write_bytes(onnx_bytes)
+    (old / "model.engine").write_bytes(b"ENGINE")
+    sidecar = {
+        "onnx_sha256": hashlib.sha256(onnx_bytes).hexdigest(),
+        "precision": "fp16",
+        "tensorrt": "10.3.0",
+        "engine_sha256": hashlib.sha256(b"ENGINE").hexdigest(),
+    }
+    (old / "model.engine.json").write_text(json.dumps(sidecar))
+
+    new = deployments / "demo-dep-002"
+    new.mkdir()
+    (new / "model.onnx").write_bytes(onnx_bytes)
+    res = ops.build(
+        new / "model.onnx",
+        new / "model.engine",
+        precision="fp16",
+        trtexec="/nonexistent/trtexec",
+        workspace_mb=512,
+        timeout_s=10,
+        reuse_scan=deployments,
+    )
+    assert res["reused_from"] == "demo-dep-001" and (new / "model.engine").read_bytes() == b"ENGINE"
+    assert json.loads((new / "model.engine.json").read_text())["reused_from"] == "demo-dep-001"
+    assert res["engine_sha256"] == sidecar["engine_sha256"] and res["builder_peak_rss_mb"] is None
+
+    # different precision / TRT version / ONNX -> no reuse (trtexec would run and fail here)
+    assert (
+        ops.find_reusable_engine(
+            deployments, onnx_sha256=sidecar["onnx_sha256"], precision="fp32", tensorrt="10.3.0"
+        )
+        is None
+    )
+    assert (
+        ops.find_reusable_engine(
+            deployments, onnx_sha256=sidecar["onnx_sha256"], precision="fp16", tensorrt="10.4.0"
+        )
+        is None
+    )
+    assert (
+        ops.find_reusable_engine(
+            deployments, onnx_sha256="0" * 64, precision="fp16", tensorrt="10.3.0"
+        )
+        is None
+    )
+    # the reused copy is itself a valid cache source; tampered engines are never reused
+    assert ops.find_reusable_engine(
+        deployments, onnx_sha256=sidecar["onnx_sha256"], precision="fp16", tensorrt="10.3.0"
+    ) in (old / "model.engine", new / "model.engine")
+    (old / "model.engine").write_bytes(b"CORRUPT")
+    (new / "model.engine").write_bytes(b"CORRUPT")
+    assert (
+        ops.find_reusable_engine(
+            deployments, onnx_sha256=sidecar["onnx_sha256"], precision="fp16", tensorrt="10.3.0"
+        )
+        is None
+    )
+    with pytest.raises(RuntimeError):
+        ops.build(
+            new / "model.onnx",
+            tmp_path / "x.engine",
+            precision="fp16",
+            trtexec="/nonexistent/trtexec",
+            workspace_mb=512,
+            timeout_s=10,
+            reuse_scan=deployments,
+        )

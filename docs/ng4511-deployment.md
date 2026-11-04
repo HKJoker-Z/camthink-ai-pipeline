@@ -64,11 +64,17 @@ Parity check against ultralytics' own predictions (ONNX + onnxruntime, 128 COCO 
 
 ## Device layout
 
+Deployments are named on the device by their **`target_ref` = `<project>-<deployment_id>`**
+(e.g. `demo_person_detection-dep-004`), so several projects can share one device without
+colliding; a device has one `current` deployment at a time, and deploying project B supersedes
+project A on the device (A's `health` then reports `POINTER_MISMATCH` until A is redeployed).
+
 ```
 ~/camthink-ai/
   runtime/camthink_edge/            bundle; VERSION compared on every stage/setup, re-uploaded when different
-  deployments/dep-NNN/              model.onnx runtime.json deployment.json samples/ model.engine model.engine.build.log
-  current -> deployments/dep-NNN    atomic (ln -sfn tmp && mv -T)
+  deployments/<project>-dep-NNN/    model.onnx runtime.json deployment.json samples/
+                                    model.engine model.engine.json (provenance) model.engine.build.log
+  current -> deployments/<ref>      atomic (ln -sfn tmp && mv -T)
   service/status.json               heartbeat: deployment, fps, frames, errors, last detections, rss
   tmp/infer-*/                      scratch for `deploy infer` (removed afterwards)
 ~/.config/systemd/user/camthink-ai-inference.service   ExecStart python3 -m camthink_edge serve …
@@ -76,6 +82,12 @@ Parity check against ultralytics' own predictions (ONNX + onnxruntime, 128 COCO 
 
 The TensorRT engine is built on the device and recorded on the **Deployment**
 (`runtime_artifact`), never on the model version or export — engines are TRT/GPU specific.
+
+**Engine reuse**: `build` writes `model.engine.json` (ONNX sha256, precision, TensorRT version,
+engine sha256). A later deployment of the *identical* ONNX with the same precision on the same
+TensorRT version copies that engine instead of rebuilding (`runtime_artifact.reused_from`), which
+turns a ~8-minute prepare phase into seconds; a sidecar whose engine is missing or tampered is
+ignored. The smoke test and benchmark still run on the copy.
 
 ## Target configuration (`infrastructure.yaml`)
 
@@ -159,8 +171,15 @@ ONNX sha + precision + TensorRT version is a candidate M6 improvement. The faile
 (pre-fix stage error) left `~/camthink-ai/deployments/dep-001/` (ONNX + samples, no engine) on
 the device; it is harmless and can be removed by hand — there is no automatic pruning in V1.
 
+## RTSP / camera input
+
+`serve --source <rtsp-url>` reads frames with OpenCV (GStreamer backend present on the device)
+and reconnects on stream errors; set `inference_source` (`NG4511_RTSP_URL` in `.env`) and run
+`target setup` to rewrite the user unit. **Status: not yet verified with a real camera** — the
+acceptance runs used the sample-image loop. A real-camera test is a separate pending item.
+
 ## Not done / deferred
 
-Deployment pruning (`deploy prune`, with protections) — storage is ample; INT8; RTSP input is
-implemented in `serve` (OpenCV) but only exercised once `inference_source` is set; engine cache
-for identical exports.
+Deployment pruning (`deploy prune`, with protections) — storage is ample; INT8; real-camera
+RTSP verification; marking another project's deployment SUPERSEDED when a different project
+takes over the device.

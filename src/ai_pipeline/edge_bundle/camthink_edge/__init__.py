@@ -8,4 +8,4 @@ Dependencies on the device: Python >= 3.10, numpy, the JetPack TensorRT Python b
 libcudart (via ctypes), and OpenCV *or* Pillow for image IO.
 """
 
-VERSION = "0.1.1"
+VERSION = "0.2.0"

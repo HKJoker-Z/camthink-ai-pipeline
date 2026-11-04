@@ -138,9 +138,12 @@ def start_deployment(
 
     pointers = project.pointers()
     dep_id = next_sequential_id(DEPLOYMENT_ID_PREFIX, project.store.list_ids("deployments"))
+    ref = target_ref(project.name, dep_id)
     now = utc_now_iso()
     record: dict[str, Any] = {
         "deployment_id": dep_id,
+        # Device-side name (directory, `current` link): unique across projects sharing a target.
+        "target_ref": ref,
         "state": _D.CREATED.value,
         "project": project.name,
         "model_version": mv,
@@ -190,6 +193,7 @@ def start_deployment(
 
     metadata = {
         "deployment_id": dep_id,
+        "target_ref": ref,
         "project": project.name,
         "model_version": mv,
         "export_id": export["export_id"],
@@ -216,21 +220,19 @@ def start_deployment(
     if not pre_activation(_D.VERIFYING, "verify", target.verify, "target_info"):
         return record
     if not pre_activation(
-        _D.STAGING, "stage", lambda: target.stage(dep_id, artifact_path, metadata), "staged"
+        _D.STAGING, "stage", lambda: target.stage(ref, artifact_path, metadata), "staged"
     ):
         return record
     if not pre_activation(
         _D.PREPARING,
         "prepare",
         lambda: target.prepare(
-            dep_id, precision=cfg.deployment.precision, params={"runtime": cfg.deployment.runtime}
+            ref, precision=cfg.deployment.precision, params={"runtime": cfg.deployment.runtime}
         ),
         "runtime_artifact",
     ):
         return record
-    if not pre_activation(
-        _D.SMOKE_TESTING, "smoke_test", lambda: target.smoke_test(dep_id), "smoke"
-    ):
+    if not pre_activation(_D.SMOKE_TESTING, "smoke_test", lambda: target.smoke_test(ref), "smoke"):
         return record
     if not record["smoke"].get("passed"):
         ph.finish(
@@ -244,9 +246,7 @@ def start_deployment(
             },
         )
         return record
-    if not pre_activation(
-        _D.BENCHMARKING, "benchmark", lambda: target.benchmark(dep_id), "benchmark"
-    ):
+    if not pre_activation(_D.BENCHMARKING, "benchmark", lambda: target.benchmark(ref), "benchmark"):
         return record
     # Benchmark *execution* above is separate from the acceptance *policy* below: results are
     # persisted even when no thresholds are configured.
@@ -271,7 +271,7 @@ def start_deployment(
     # ---- activation: from here on failures roll back -------------------------------------
     ph.to(_D.ACTIVATING)
     try:
-        record["activation"] = target.activate(dep_id)
+        record["activation"] = target.activate(ref)
     except Exception as exc:  # noqa: BLE001
         blog.error("activation failed: %s", exc)
         _rollback(project, target, record, reason=_error(exc, "activate"))
@@ -341,7 +341,7 @@ def _perform_rollback(
     blog = log.bind(project=project.name, deployment_id=dep_id, target=record["target"])
     outcome: dict[str, Any] = {"trigger": trigger, "reason": reason, "to": to, "at": utc_now_iso()}
     try:
-        outcome["result"] = target.rollback(to)
+        outcome["result"] = target.rollback(_ref_of(project, to) if to else None)
         if to is not None:
             hc = project.config.deployment.health
             health = wait_healthy(target, hc.timeout_s, hc.interval_s)
@@ -367,6 +367,16 @@ def _perform_rollback(
             _Phase(project, prev).to(_D.ACTIVE, restored_by=dep_id)
     project.set_pointer("active_deployment", to)
     blog.warning("rolled back %s to %s (%s)", dep_id, to, reason)
+
+
+def target_ref(project_name: str, deployment_id: str) -> str:
+    """Device-side name of a deployment; a target may host deployments of several projects."""
+    return f"{project_name}-{deployment_id}"
+
+
+def _ref_of(project: Project, deployment_id: str) -> str:
+    rec = project.store.read("deployments", deployment_id)
+    return rec.get("target_ref") or target_ref(project.name, deployment_id)
 
 
 def wait_healthy(target: DeploymentTarget, timeout_s: float, interval_s: float) -> dict[str, Any]:
@@ -463,7 +473,8 @@ def infer_on_target(
         raise OperationError(
             f"image(s) not found: {missing}", code="IMAGE_NOT_FOUND", details={"missing": missing}
         )
-    result = target.infer(images, deployment_id=deployment_id)
+    ref = _ref_of(project, deployment_id) if deployment_id else None
+    result = target.infer(images, deployment_id=ref)
     return {"target": name, "deployment_id": dep_id, **result}
 
 
@@ -521,7 +532,7 @@ def _recover(project: Project, to: str) -> dict[str, Any]:
             details={"to": to, "state": prev["state"]},
         )
     target = get_target(prev["target"], project.settings)
-    result = target.rollback(to)
+    result = target.rollback(_ref_of(project, to))
     health_result = target.health_check()
     if not health_result.get("healthy"):
         raise OperationError(
@@ -550,13 +561,15 @@ def health(project: Project, *, target_name: str | None = None) -> dict[str, Any
     name = name or project.config.deployment.target
     target = get_target(name, project.settings)
     result = target.health_check()
+    active_ref = _ref_of(project, active_id) if active_id else None
     return {
         "target": name,
         "healthy": bool(result.get("healthy")),
         "target_current": result.get("current"),
         "active_deployment": active_id,
+        "active_target_ref": active_ref,
         "last_known_good_deployment": pointers["last_known_good_deployment"],
-        "consistent": result.get("current") == active_id,
+        "consistent": result.get("current") == active_ref,
         "details": result.get("details", {}),
     }
 
@@ -564,6 +577,7 @@ def health(project: Project, *, target_name: str | None = None) -> dict[str, Any
 def deployment_summary(rec: dict[str, Any]) -> dict[str, Any]:
     return {
         "deployment_id": rec["deployment_id"],
+        "target_ref": rec.get("target_ref"),
         "state": rec["state"],
         "model_version": rec["model_version"],
         "export_id": rec["export_id"],

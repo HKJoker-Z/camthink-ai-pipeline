@@ -130,7 +130,7 @@ def test_pre_activation_rejection_and_failure_json(workspace: Path, tmp_path: Pa
     r, p = invoke_json("deploy", "status", "demo")
     assert p["result"]["deployment_id"] == "dep-001" and p["result"]["state"] == "ACTIVE"
     r, p = invoke_json("health", "demo")
-    assert r.exit_code == 0 and p["result"]["target_current"] == "dep-001"
+    assert r.exit_code == 0 and p["result"]["target_current"] == "demo-dep-001"
 
 
 def test_post_activation_rollback_json(workspace: Path, tmp_path: Path):
@@ -138,7 +138,7 @@ def test_post_activation_rollback_json(workspace: Path, tmp_path: Path):
     invoke_json("export", "start", "demo", "--wait")
     invoke_json("deploy", "start", "demo")
 
-    _inject(workspace, health_fail_for=["dep-002"])
+    _inject(workspace, health_fail_for=["demo-dep-002"])
     r, p = invoke_json("deploy", "start", "demo")
     assert r.exit_code == 1
     assert p["error"]["code"] == "DEPLOYMENT_ROLLED_BACK"
@@ -150,10 +150,10 @@ def test_post_activation_rollback_json(workspace: Path, tmp_path: Path):
     r, p = invoke_json("deploy", "list", "demo")
     assert [d["state"] for d in p["result"]["deployments"]] == ["ACTIVE", "ROLLED_BACK"]
     r, p = invoke_json("health", "demo")
-    assert r.exit_code == 0 and p["result"]["target_current"] == "dep-001"
+    assert r.exit_code == 0 and p["result"]["target_current"] == "demo-dep-001"
 
     # rollback failure -> explicit state, recovery via --to
-    _inject(workspace, fail="rollback", health_fail_for=["dep-003"])
+    _inject(workspace, fail="rollback", health_fail_for=["demo-dep-003"])
     r, p = invoke_json("deploy", "start", "demo")
     assert r.exit_code == 1 and p["error"]["code"] == "DEPLOYMENT_ROLLBACK_FAILED"
     assert (
@@ -163,7 +163,7 @@ def test_post_activation_rollback_json(workspace: Path, tmp_path: Path):
     assert p["next_operations"][0] == "health demo"
     r, p = invoke_json("health", "demo")
     assert r.exit_code == 1 and p["error"]["code"] == "UNHEALTHY"
-    assert p["result"]["target_current"] == "dep-003" and p["result"]["consistent"] is False
+    assert p["result"]["target_current"] == "demo-dep-003" and p["result"]["consistent"] is False
     (workspace / ".fake-target" / "inject.json").unlink()
     r, p = invoke_json("health", "demo")  # target now healthy but nothing is marked active
     assert r.exit_code == 1 and p["error"]["code"] == "POINTER_MISMATCH"
@@ -228,4 +228,4 @@ def test_human_output_m3(workspace: Path, tmp_path: Path):
     r = runner.invoke(app, ["deploy", "list", "demo"])
     assert "* dep-001  ACTIVE" in r.stdout and "dep-002  REJECTED" in r.stdout
     r = runner.invoke(app, ["health", "demo"])
-    assert r.exit_code == 0 and "healthy; current=dep-001" in r.stdout
+    assert r.exit_code == 0 and "healthy; current=demo-dep-001" in r.stdout

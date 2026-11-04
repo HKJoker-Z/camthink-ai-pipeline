@@ -76,6 +76,7 @@ projects refer to. Generated state lives under `artifacts/` (gitignored).
 - [docs/deployment.md](docs/deployment.md) — exports, deployment targets, deployment state machine, rollback
 - [docs/training-server.md](docs/training-server.md) — AI server inspection, setup, strict GPU policy, M4 acceptance
 - [docs/ng4511-deployment.md](docs/ng4511-deployment.md) — edge runtime (`camthink_edge`), NG4511 target, device layout, service
+- [docs/operator-guide.md](docs/operator-guide.md) — commands, workflow, JSON/exit codes, monitoring, failures, new projects, approvals
 - [docs/design/v1-architecture-proposal.md](docs/design/v1-architecture-proposal.md) — full design, milestones, open items
 
 ## Development

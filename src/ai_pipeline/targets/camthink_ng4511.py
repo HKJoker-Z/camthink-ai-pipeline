@@ -319,6 +319,8 @@ class CamThinkNG4511Target:
                 str(self.cfg.workspace_mb),
                 "--timeout-s",
                 str(self.cfg.build_timeout_s),
+                "--reuse-scan",
+                f"{self.root}/deployments",
             ),
             timeout=self.cfg.build_timeout_s + 120,
         )
@@ -330,6 +332,7 @@ class CamThinkNG4511Target:
             "environment": res.get("environment", {}),
             "duration_s": res.get("duration_s"),
             "builder_peak_rss_mb": res.get("builder_peak_rss_mb"),
+            "reused_from": res.get("reused_from"),
         }
 
     def smoke_test(self, deployment_id: str) -> dict[str, Any]:

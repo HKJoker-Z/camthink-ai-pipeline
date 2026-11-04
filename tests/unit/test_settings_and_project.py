@@ -234,3 +234,12 @@ def test_next_operations_progression():
         == "health p"
     )
     assert next_operations("p", full, selected, ["run-9"]) == ["run status p run-9"]
+
+
+def test_create_accepts_prestaged_data_directory(settings: Settings):
+    """Operators may copy data into projects/<name>/data before creating the project."""
+    staged = settings.projects_root / "demo_h" / "data" / "raw"
+    staged.mkdir(parents=True)
+    (staged / "x.txt").write_text("placeholder")
+    p = Project.create("demo_h", settings)
+    assert p.config_path.is_file() and (staged / "x.txt").is_file()

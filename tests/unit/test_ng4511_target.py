@@ -71,7 +71,7 @@ class FakeSsh:
         self.uploads.append((files, remote))
         if remote.endswith("runtime.new/"):
             self.runtime_version = bundle_version()
-        m = re.search(r"/deployments/(dep-\d+)/", remote)
+        m = re.search(r"/deployments/([\w-]*dep-\d+)/", remote)
         if m:
             self.deployments.setdefault(m.group(1), set()).update(Path(f).name for f in files)
         if remote.endswith(".service"):
@@ -128,7 +128,11 @@ class FakeSsh:
             if action == "is-active":
                 return self.service_state + "\n", 0 if self.service_state == "active" else 3
             if action in ("restart", "start"):
-                if self.fail == "rollback" and self.current and self.current != "dep-002":
+                if (
+                    self.fail == "rollback"
+                    and self.current
+                    and not self.current.endswith("dep-002")
+                ):
                     return "", 1
                 self.service_state = "active"
             elif action == "stop":
@@ -192,7 +196,7 @@ class FakeSsh:
             ) + "\n", 0
         if cmd == "health":
             ok = self.healthy and self.current is not None and self.service_state == "active"
-            if self.fail == "health_check" and self.current == "dep-002":
+            if self.fail == "health_check" and self.current.endswith("dep-002"):
                 ok = False
             return json.dumps(
                 {
@@ -301,7 +305,7 @@ def test_full_deployment_through_ng4511_target(exported_project, use_fake_target
     assert rec["target_type"] == "camthink_ng4511"
     # bundle was installed implicitly during stage; files staged; engine built; service restarted
     assert fake.runtime_version == bundle_version()
-    assert fake.deployments["dep-001"] >= {
+    assert fake.deployments["demo-dep-001"] >= {
         "model.onnx",
         "runtime.json",
         "deployment.json",
@@ -322,7 +326,7 @@ def test_full_deployment_through_ng4511_target(exported_project, use_fake_target
         and rec["runtime_artifact"]["duration_s"] == 95.0
     )
     assert rec["benchmark"]["metrics"]["fps"] == 80.0 and rec["acceptance"]["passed"]
-    assert fake.current == "dep-001" and fake.service_state == "active"
+    assert fake.current == "demo-dep-001" and fake.service_state == "active"
     assert rec["activation"]["service_restarted"] is True
     assert rec["health"]["healthy"] and rec["health"]["details"]["attempts"] == 1
     assert any("--iterations 100 --warmup 20" in c for c in fake.commands)
@@ -341,7 +345,7 @@ def test_ng4511_prepare_failure_leaves_active_untouched(exported_project, use_fa
         bad["error"]["code"] == "REMOTE_OPERATION_FAILED"
         and "trtexec failed" in bad["error"]["message"]
     )
-    assert fake.current == "dep-001" and p.pointers()["active_deployment"] == "dep-001"
+    assert fake.current == "demo-dep-001" and p.pointers()["active_deployment"] == "dep-001"
 
 
 def test_ng4511_health_failure_rolls_back(exported_project, use_fake_target):
@@ -353,7 +357,7 @@ def test_ng4511_health_failure_rolls_back(exported_project, use_fake_target):
     bad = start_deployment(p, target_name="ng4511-lab")
     assert bad["state"] == "ROLLED_BACK" and bad["rollback"]["to"] == "dep-001"
     assert bad["health"]["details"]["attempts"] >= 2  # polled until the short timeout
-    assert fake.current == "dep-001" and fake.service_state == "active"
+    assert fake.current == "demo-dep-001" and fake.service_state == "active"
     assert p.pointers()["active_deployment"] == "dep-001"
 
 

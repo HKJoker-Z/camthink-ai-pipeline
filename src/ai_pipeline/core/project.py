@@ -201,7 +201,7 @@ class Project:
             )
 
         files = render_template(template, project_name=name, task_type=task_type)
-        project.dir.mkdir(parents=True, exist_ok=False)
+        project.dir.mkdir(parents=True, exist_ok=True)  # data may be pre-staged under data/
         for rel, content in files.items():
             dest = project.dir / rel
             dest.parent.mkdir(parents=True, exist_ok=True)

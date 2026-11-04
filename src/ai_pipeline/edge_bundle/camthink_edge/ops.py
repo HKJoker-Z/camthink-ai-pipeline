@@ -66,14 +66,85 @@ def load_runtime_config(path: Path) -> dict[str, Any]:
 # --------------------------------------------------------------------------- build
 
 
+def _engine_sidecar(engine: Path) -> Path:
+    return Path(str(engine) + ".json")
+
+
+def find_reusable_engine(
+    scan_dir: Path, *, onnx_sha256: str, precision: str, tensorrt: str
+) -> Path | None:
+    """An engine built earlier on this device from the identical ONNX with the same precision and
+    TensorRT version is equivalent; reuse it instead of rebuilding (minutes on Jetson). Sidecars
+    written by :func:`build` are the source of truth; a sidecar whose engine is missing or whose
+    hash no longer matches is ignored."""
+    for sidecar in sorted(Path(scan_dir).glob("*/model.engine.json")):
+        try:
+            meta = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (meta.get("onnx_sha256"), meta.get("precision"), meta.get("tensorrt")) != (
+            onnx_sha256,
+            precision,
+            tensorrt,
+        ):
+            continue
+        candidate = sidecar.with_suffix("")  # model.engine
+        if candidate.is_file() and _sha256(candidate) == meta.get("engine_sha256"):
+            return candidate
+    return None
+
+
 def build(
-    onnx: Path, engine: Path, *, precision: str, trtexec: str, workspace_mb: int, timeout_s: int
+    onnx: Path,
+    engine: Path,
+    *,
+    precision: str,
+    trtexec: str,
+    workspace_mb: int,
+    timeout_s: int,
+    reuse_scan: Path | None = None,
 ) -> dict[str, Any]:
-    """ONNX -> TensorRT engine using the device's trtexec. Engine is written atomically."""
+    """ONNX -> TensorRT engine using the device's trtexec. The engine is written atomically with
+    a ``model.engine.json`` sidecar (provenance, used for reuse by later deployments)."""
     import tensorrt as trt
 
     if not Path(onnx).is_file():
         raise FileNotFoundError(f"onnx not found: {onnx}")
+    if precision not in ("fp16", "fp32"):
+        raise ValueError(f"unsupported precision {precision!r} (fp16 | fp32)")
+    onnx_sha = _sha256(Path(onnx))
+    environment = {"tensorrt": trt.__version__, "runtime_version": VERSION}
+
+    if reuse_scan is not None:
+        source = find_reusable_engine(
+            Path(reuse_scan), onnx_sha256=onnx_sha, precision=precision, tensorrt=trt.__version__
+        )
+        if source is not None and source.resolve() != Path(engine).resolve():
+            t0 = time.monotonic()
+            tmp = Path(str(engine) + ".copying")
+            shutil.copyfile(source, tmp)
+            os.replace(tmp, engine)
+            meta = {
+                "onnx_sha256": onnx_sha,
+                "precision": precision,
+                "tensorrt": trt.__version__,
+                "engine_sha256": _sha256(Path(engine)),
+                "built_at": _now(),
+                "reused_from": source.parent.name,
+            }
+            _engine_sidecar(Path(engine)).write_text(json.dumps(meta, indent=2), encoding="utf-8")
+            return {
+                "engine_path": str(engine),
+                "engine_sha256": meta["engine_sha256"],
+                "engine_size_bytes": Path(engine).stat().st_size,
+                "onnx_sha256": onnx_sha,
+                "build_params": {"precision": precision, "reused_from": meta["reused_from"]},
+                "environment": environment,
+                "duration_s": round(time.monotonic() - t0, 1),
+                "builder_peak_rss_mb": None,
+                "reused_from": meta["reused_from"],
+            }
+
     tmp = Path(str(engine) + ".building")
     tmp.unlink(missing_ok=True)
     cmd = [
@@ -85,34 +156,51 @@ def build(
     ]
     if precision == "fp16":
         cmd.append("--fp16")
-    elif precision != "fp32":
-        raise ValueError(f"unsupported precision {precision!r} (fp16 | fp32)")
     log_path = Path(str(engine) + ".build.log")
     t0 = time.monotonic()
     with log_path.open("w", encoding="utf-8") as log:
-        proc = subprocess.run(
-            cmd, stdout=log, stderr=subprocess.STDOUT, timeout=timeout_s, check=False
-        )
+        try:
+            proc = subprocess.run(
+                cmd, stdout=log, stderr=subprocess.STDOUT, timeout=timeout_s, check=False
+            )
+        except OSError as exc:
+            raise RuntimeError(f"cannot run trtexec at {trtexec!r}: {exc}") from exc
     duration = round(time.monotonic() - t0, 1)
     peak_mb = round(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024, 1)
     if proc.returncode != 0 or not tmp.is_file():
         tail = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-15:]
         raise RuntimeError(f"trtexec failed (exit {proc.returncode}); log tail: {' | '.join(tail)}")
     os.replace(tmp, engine)
+    engine_sha = _sha256(Path(engine))
+    _engine_sidecar(Path(engine)).write_text(
+        json.dumps(
+            {
+                "onnx_sha256": onnx_sha,
+                "precision": precision,
+                "tensorrt": trt.__version__,
+                "engine_sha256": engine_sha,
+                "built_at": _now(),
+                "workspace_mb": workspace_mb,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     return {
         "engine_path": str(engine),
-        "engine_sha256": _sha256(Path(engine)),
+        "engine_sha256": engine_sha,
         "engine_size_bytes": Path(engine).stat().st_size,
-        "onnx_sha256": _sha256(Path(onnx)),
+        "onnx_sha256": onnx_sha,
         "build_params": {
             "precision": precision,
             "workspace_mb": workspace_mb,
             "trtexec": trtexec,
             "command": cmd,
         },
-        "environment": {"tensorrt": trt.__version__, "runtime_version": VERSION},
+        "environment": environment,
         "duration_s": duration,
         "builder_peak_rss_mb": peak_mb,
+        "reused_from": None,
         "log": str(log_path),
     }
 

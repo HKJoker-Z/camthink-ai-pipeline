@@ -1,0 +1,20 @@
+# Overlay merged into the freshly created project.yaml by scripts/v1_acceptance.sh.
+# Single-class demo, labels produced by the pretrained model (`label auto`).
+dataset:
+  classes: [person]
+  validation:
+    min_images: 20
+    min_instances_per_class: 10
+    max_empty_label_ratio: 0.7      # ~40% of COCO128 images contain a person
+labeling:
+  auto:
+    class_map: { person: person }
+    confidence: 0.4
+training:
+  epochs: 20                        # pretrained head is re-initialised for the new class list
+  device: "0"
+evaluation:
+  acceptance:
+    mAP50: { min: 0.3 }
+deployment:
+  target: ng4511-lab

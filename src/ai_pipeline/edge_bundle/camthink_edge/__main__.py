@@ -29,6 +29,11 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--trtexec", default="/usr/src/tensorrt/bin/trtexec")
     b.add_argument("--workspace-mb", type=int, default=1024)
     b.add_argument("--timeout-s", type=int, default=1800)
+    b.add_argument(
+        "--reuse-scan",
+        default=None,
+        help="directory whose */model.engine.json sidecars may be reused",
+    )
 
     i = sub.add_parser("infer", help="run detection on images")
     i.add_argument("--engine", required=True)
@@ -71,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
                     trtexec=args.trtexec,
                     workspace_mb=args.workspace_mb,
                     timeout_s=args.timeout_s,
+                    reuse_scan=Path(args.reuse_scan) if args.reuse_scan else None,
                 )
             )
         if args.cmd == "infer":

@@ -90,7 +90,7 @@ directly.
 |---|---|
 | `edge_bundle/camthink_edge` | standalone device runtime (data, not imported): `build` (trtexec), `infer`, `smoke`, `benchmark`, `health`, `serve`; config-driven via `runtime.json` |
 | `core.remote` | `SshHost`: `ssh`/`scp` subprocess wrapper with `RemoteError` details |
-| `targets.camthink_ng4511` | `DeploymentTarget` over SSH: bundle install, user-owned layout, `systemd --user` service, phase commands |
+| `targets.camthink_ng4511` | `DeploymentTarget` over SSH: bundle install, user-owned layout, `systemd --user` service, phase commands; deployments are addressed by `target_ref = <project>-<dep>` so projects can share a device |
 
 Seam status: `ComputeBackend` has `local` (production for V1, where control host == compute
 host) and a schema slot for `ssh`. `DeploymentTarget` has `fake` and `camthink_ng4511`.

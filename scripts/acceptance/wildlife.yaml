@@ -1,0 +1,21 @@
+# Overlay merged into the freshly created project.yaml by scripts/v1_acceptance.sh.
+# Second, unrelated demo: four classes, labels imported from the dataset (`label import`),
+# proving the platform is reused through configuration only. Dataset: ultralytics
+# "african-wildlife" sample (1 501 images, AGPL-3.0; temporary demo use only).
+dataset:
+  classes: [buffalo, elephant, rhino, zebra]
+  validation:
+    min_images: 100
+    min_instances_per_class: 20
+    max_empty_label_ratio: 0.2
+training:
+  epochs: 15
+  device: "0"
+evaluation:
+  acceptance:
+    mAP50: { min: 0.5 }
+deployment:
+  target: ng4511-lab
+  smoke:
+    samples: 4
+    min_detections: 1
