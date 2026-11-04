@@ -2,7 +2,9 @@
 
 Our own, independent inference runtime on the CamThink NeoEdge NG4511, driven through the
 generic `DeploymentTarget` interface and the M3 lifecycle. The vendor's
-`camthink-detect-web.service` is **not** touched, replaced or depended upon.
+`camthink-detect-web.service` is **not** touched, replaced or depended upon (it is no longer
+needed; stopping it is an operator decision requiring sudo, see "Vendor service" below).
+**M5 status: accepted** — measured results at the end of this document.
 
 ```
 AI server (ai-pipeline)                         NG4511 (julian@192.168.5.222, alias camthink-test)
@@ -126,8 +128,39 @@ engine build), `benchmark.metrics.memory_mb` (runtime process RSS), `benchmark.d
 frame-rate capped (`fps_limit`). Use `deploy status --full` to inspect; adjust `workspace_mb`
 downward if the build fails for memory.
 
+## Vendor service
+
+`camthink-detect-web.service` (system unit, user `julian`, port 8766, its own venv under
+`~/camthink-detect-web`) ran unchanged throughout M5; both services coexisted (RAM peak
+2.9 GB of 7.6 GB with our build + benchmark running). It is not required by our runtime. To
+retire it, an operator with sudo can run on the device
+`sudo systemctl disable --now camthink-detect-web.service`; the pipeline deliberately never
+manages system services.
+
+## M5 acceptance result (ai-server → camthink-test, 2026-11-04)
+
+| Step | Result |
+|---|---|
+| `target setup` / `verify` | runtime 0.1.0 installed into `~/camthink-ai`, user unit enabled; L4T R36.4.3, Python 3.10.12, TensorRT 10.3.0, numpy 1.21.5, OpenCV 4.8.0, cudart 12.6; 5.4 GiB RAM available, 175 GB disk free |
+| `deploy start` → `dep-002` | **ACTIVE** through all 10 phases |
+| TensorRT FP16 build (on device) | `model.engine` 8.66 MB, sha `4ee46a7e…`, **508 s** build, trtexec peak RSS 1.68 GB; engine IO `images [1,3,640,640] f32` → `output0 [1,5,8400] f32` |
+| smoke (3 test-split samples) | 2 person detections (0.49, 0.40) → passed |
+| benchmark (100 iters, warmup 20) | **p50 7.67 ms, p95 10.8 ms, 121 fps** (H2D+execute+D2H); end-to-end incl. pre/post 13.3 ms; process RSS 361 MB; system available RAM 4.81 → 4.62 GB; tegrastats RAM max 2.92 GB / GPU util mean 83 %, max 92 % |
+| deployment acceptance | fps 121 ≥ 15, p50 7.67 ≤ 60 → activated |
+| health | service `active`, heartbeat age 1 s for `dep-002`, 0 errors |
+| `deploy infer` (6 COCO images) | 1 person (0.62) on `000000000036.jpg`; per image pre ≈ 5 ms (OpenCV), inference ≈ 14 ms cold-start process incl. first-call 108 ms, post ≈ 0.3 ms |
+| second `deploy start` → `dep-003` | ACTIVE, p50 6.82 ms, 131 fps; `dep-002` SUPERSEDED |
+| `rollback` | `dep-003` → ROLLED_BACK, `current -> dep-002`, service restarted, healthy on the 2nd poll (~6 s), `dep-002` ACTIVE again |
+| vendor service | untouched, still running |
+
+Observations: the FP16 engine build dominates deployment time (~8.5 min at 25 W with the vendor
+service resident); redeploying the *same* export rebuilds the engine — an engine cache keyed by
+ONNX sha + precision + TensorRT version is a candidate M6 improvement. The failed `dep-001`
+(pre-fix stage error) left `~/camthink-ai/deployments/dep-001/` (ONNX + samples, no engine) on
+the device; it is harmless and can be removed by hand — there is no automatic pruning in V1.
+
 ## Not done / deferred
 
-Deployment pruning (`deploy prune`, with protections) — storage is ample (172 GB); INT8; RTSP
-has been implemented in `serve` (OpenCV) but is exercised only when `inference_source` is set;
-the vendor service remains untouched and uninspected beyond its name.
+Deployment pruning (`deploy prune`, with protections) — storage is ample; INT8; RTSP input is
+implemented in `serve` (OpenCV) but only exercised once `inference_source` is set; engine cache
+for identical exports.

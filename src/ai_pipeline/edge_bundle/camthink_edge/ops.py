@@ -507,7 +507,7 @@ def serve(root: Path, *, source: str | None, fps_limit: float, heartbeat_s: floa
 
     frames, errors, idx = 0, 0, 0
     last_hb = 0.0
-    window: list[float] = []
+    window: list[float] = []  # wall-clock frame timestamps -> actual (capped) frame rate
     last_dets: list[dict[str, Any]] = []
     min_dt = 1.0 / fps_limit if fps_limit > 0 else 0.0
     write_status(
@@ -542,10 +542,11 @@ def serve(root: Path, *, source: str | None, fps_limit: float, heartbeat_s: floa
             time.sleep(1.0)
             continue
         dt = time.perf_counter() - t0
-        window.append(dt)
+        window.append(time.monotonic())
         window = window[-50:]
         if time.monotonic() - last_hb >= heartbeat_s:
-            fps = round(len(window) / sum(window), 1) if window else 0.0
+            span = window[-1] - window[0]
+            fps = round((len(window) - 1) / span, 1) if len(window) > 1 and span > 0 else 0.0
             write_status(
                 deployment=current,
                 source=source or "samples",

@@ -35,6 +35,10 @@ Status: **ACCEPTED for M0 (2026-11-03) with the topology decision below.**
   numpy + device TensorRT bindings, ctypes libcudart) under a user-owned `~/camthink-ai` with a
   `systemd --user` service; the vendor service is left untouched. Transfer via `scp`; no
   pruning; deployment stays synchronous. See `docs/ng4511-deployment.md`.
+- **M5 accepted (2026-11-04):** real NG4511 deployment through the generic lifecycle: on-device
+  TensorRT FP16 build (508 s), smoke, benchmark (p50 7.67 ms, 121 fps, RSS 361 MB), policy,
+  activation, health, real inference, supersede and rollback all verified. All §29 V1 success
+  criteria are met by the demo project; §25 items 8–15 and 20–25 are resolved.
 
 ```
 Human / future Grok Bot
