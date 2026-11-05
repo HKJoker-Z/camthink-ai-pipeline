@@ -306,6 +306,13 @@ class CamThinkNG4511TargetConfig(_Strict):
     build_timeout_s: int = Field(default=1800, ge=60)
     fps_limit: float = Field(default=5.0, gt=0)
     connect_timeout_s: int = Field(default=10, ge=1)
+    # Live view (M9): a second systemd --user unit serving the detection webpage from the
+    # frames the inference service publishes. None = no live view on this device.
+    liveview_service_name: str | None = "camthink-ai-liveview"
+    liveview_port: int = Field(default=8080, ge=1, le=65535)
+    # LAN address browsers use to reach the device. None = the SSH alias's HostName.
+    liveview_host: str | None = None
+    device_label: str | None = None  # human label shown on the live-view page
 
 
 DeploymentTargetConfig = Annotated[

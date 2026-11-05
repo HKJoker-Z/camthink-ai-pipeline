@@ -47,13 +47,28 @@ class SshHost:
             "ServerAliveInterval=15",
         ]
 
-    def run(self, command: str, *, timeout: float = 120, check: bool = True) -> CommandResult:
-        """Run ``command`` through the remote user's ``sh -c``."""
+    def run(
+        self,
+        command: str,
+        *,
+        timeout: float = 120,
+        check: bool = True,
+        stdin: str | None = None,
+    ) -> CommandResult:
+        """Run ``command`` through the remote user's ``sh -c``. ``stdin`` (if given) is piped to
+        the remote process — the way to pass secrets without putting them on a command line."""
         argv = ["ssh", *self._opts(), self.host, "--", f"sh -c {shlex.quote(command)}"]
+        if stdin is None:
+            argv.insert(1, "-n")
         log.debug("ssh %s: %s", self.host, command[:200])
         try:
             proc = subprocess.run(
-                argv, capture_output=True, text=True, timeout=timeout, check=False
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+                input=stdin,
             )
         except subprocess.TimeoutExpired as exc:
             raise RemoteError(
@@ -84,9 +99,9 @@ class SshHost:
             )
         return result
 
-    def run_json(self, command: str, *, timeout: float = 120) -> dict:
+    def run_json(self, command: str, *, timeout: float = 120, stdin: str | None = None) -> dict:
         """Run a command that prints one JSON document as its last stdout line."""
-        res = self.run(command, timeout=timeout, check=False)
+        res = self.run(command, timeout=timeout, check=False, stdin=stdin)
         lines = [ln for ln in res.stdout.strip().splitlines() if ln.strip()]
         payload = None
         if lines:
@@ -121,6 +136,25 @@ class SshHost:
                 },
             )
         return payload
+
+    def resolved_hostname(self) -> str | None:
+        """The ``HostName`` the local ssh client resolves this alias to (``ssh -G``), i.e. the
+        address other LAN machines can most likely use too. None if ssh cannot tell."""
+        try:
+            proc = subprocess.run(
+                ["ssh", "-G", self.host],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        for line in proc.stdout.splitlines():
+            key, _, value = line.strip().partition(" ")
+            if key.lower() == "hostname" and value:
+                return value
+        return None
 
     def upload(
         self,
