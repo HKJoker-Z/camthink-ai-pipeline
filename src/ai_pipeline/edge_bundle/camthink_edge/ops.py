@@ -552,9 +552,21 @@ def serve(root: Path, *, source: str | None, fps_limit: float, heartbeat_s: floa
     """Long-running inference loop; writes ``<root>/service/status.json`` as a heartbeat.
 
     ``source``: RTSP/video URL (needs OpenCV) or None to loop over the deployment's sample
-    images. Reloads when ``current`` changes (the target restarts the service anyway).
+    images. When ``<root>/service/app.json`` lists sources, the RTSP monitoring mode
+    (:mod:`monitor`) runs instead and ``source`` is ignored.
     """
     root = Path(root)
+    from . import appcfg
+
+    app_cfg = appcfg.load(root)
+    if app_cfg.get("sources"):
+        # RTSP monitoring mode (M9): sources configured by `ai-pipeline app source set`.
+        problems = appcfg.validate(app_cfg)
+        if problems:
+            raise ValueError(f"invalid {appcfg.app_config_path(root)}: {'; '.join(problems)}")
+        from .monitor import run_monitor
+
+        return run_monitor(root, app_cfg, heartbeat_s=heartbeat_s)
     status_path = root / "service" / "status.json"
     status_path.parent.mkdir(parents=True, exist_ok=True)
     stop = {"flag": False}

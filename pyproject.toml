@@ -35,6 +35,7 @@ dev = [
     "pytest-cov>=5",
     "ruff>=0.5",
     "numpy>=1.24",   # edge runtime pre/post-processing tests
+    "opencv-python>=4.8",  # edge runtime RTSP/live-view tests (same package ultralytics uses)
 ]
 
 [project.scripts]
