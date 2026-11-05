@@ -76,7 +76,12 @@ def load_infrastructure(path: Path) -> InfrastructureConfig:
 
 
 def load_project_config(path: Path) -> ProjectConfig:
-    data = load_yaml_with_env(path)
+    return validate_project_data(load_yaml_with_env(path), path)
+
+
+def validate_project_data(data: dict[str, Any], path: Path) -> ProjectConfig:
+    """Validate an in-memory project mapping (already env-substituted); ``path`` is for
+    error messages only. Used before writing a configuration back to disk."""
     try:
         cfg = ProjectConfig.model_validate(data)
     except ValidationError as exc:

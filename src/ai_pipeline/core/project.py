@@ -174,7 +174,11 @@ class Project:
         *,
         task_type: str = "object_detection",
         template: str = "default",
+        changes: list[tuple[str, Any]] | None = None,
     ) -> Project:
+        """Scaffold a project. ``changes`` (dotted path, value) are applied to the rendered
+        template and validated *before* any file is written, so a rejected configuration
+        leaves no half-created project behind."""
         validate_project_name(name)
         if task_type not in task_types():
             raise ConfigError(
@@ -201,6 +205,16 @@ class Project:
             )
 
         files = render_template(template, project_name=name, task_type=task_type)
+        if changes:
+            import yaml
+
+            from ai_pipeline.core.configure import apply_changes, dump_yaml
+
+            data = yaml.safe_load(files[PROJECT_FILE]) or {}
+            new, _cfg, _diff = apply_changes(
+                data, changes, path=project.config_path, infra=settings.infra
+            )
+            files[PROJECT_FILE] = dump_yaml(name, new)
         project.dir.mkdir(parents=True, exist_ok=True)  # data may be pre-staged under data/
         for rel, content in files.items():
             dest = project.dir / rel

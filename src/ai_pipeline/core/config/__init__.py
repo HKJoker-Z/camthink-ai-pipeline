@@ -6,6 +6,7 @@ from ai_pipeline.core.config.loader import (
     load_project_config,
     load_yaml_with_env,
     validate_project_against_infra,
+    validate_project_data,
 )
 from ai_pipeline.core.config.schema import (
     BENCHMARK_METRICS,
@@ -22,4 +23,5 @@ __all__ = [
     "load_project_config",
     "load_yaml_with_env",
     "validate_project_against_infra",
+    "validate_project_data",
 ]
