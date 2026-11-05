@@ -1,0 +1,87 @@
+# Project configuration for cat_dog. Schema: docs/configuration.md. Unknown keys are
+# rejected. Edited by `ai-pipeline project configure`; comments are not preserved.
+schema_version: 1
+project:
+  name: cat_dog
+  task_type: object_detection
+  description: Cat and dog detector (M7 Test A)
+dataset:
+  classes:
+  - cat
+  - dog
+  label_format: yolo
+  sources:
+  - type: local_images
+    path: ./data/uploads/cat_dog_images
+  split:
+    train: 0.8
+    val: 0.1
+    test: 0.1
+    seed: 42
+  validation:
+    min_images: 100
+    min_instances_per_class: 50
+    max_empty_label_ratio: 0.5
+    fail_on_warnings: false
+labeling:
+  auto:
+    provider: ultralytics
+    weights: yolo11n.pt
+    class_map:
+      cat: cat
+      dog: dog
+    confidence: 0.35
+    backend: local
+model:
+  provider: ultralytics
+  candidates:
+  - name: yolo11n
+    weights: yolo11n.pt
+training:
+  backend: local
+  epochs: 20
+  image_size: 640
+  batch_size: 16
+  device: '0'
+  provider_args: {}
+evaluation:
+  split: test
+  metrics:
+  - precision
+  - recall
+  - mAP50
+  - mAP50-95
+  acceptance:
+    mAP50:
+      min: 0.5
+  selection:
+    primary_metric: mAP50-95
+export:
+  format: onnx
+  opset: 17
+  image_size: 640
+  dynamic: false
+  provider_args: {}
+deployment:
+  target: ng4511-lab
+  runtime: tensorrt
+  precision: fp16
+  acceptance:
+    latency_ms_p50:
+      max: 60
+    fps:
+      min: 15
+  inference:
+    confidence: 0.3
+    iou: 0.45
+    max_detections: 300
+  smoke:
+    samples: 3
+    min_detections: 1
+  benchmark:
+    iterations: 100
+    warmup: 20
+  health:
+    timeout_s: 120
+    interval_s: 5
+  keep_versions: 3
