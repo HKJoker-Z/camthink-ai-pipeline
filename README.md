@@ -43,8 +43,8 @@ ai-pipeline --help
 ## Quick start
 
 ```bash
-ai-pipeline project create my_detector          # scaffolds projects/my_detector/project.yaml
-$EDITOR projects/my_detector/project.yaml       # classes, candidates, thresholds, target
+ai-pipeline project create my_detector --classes cat,dog --target ng4511-lab   # validated project.yaml
+ai-pipeline project configure my_detector --epochs 30 --min-map50 0.5          # validated edits, or $EDITOR
 ai-pipeline project validate my_detector
 ai-pipeline data import my_detector ./images    # or omit the path to use dataset.sources
 ai-pipeline label import my_detector ./labels   # YOLO txt, matched by filename stem
@@ -60,6 +60,8 @@ ai-pipeline target setup my_detector            # install the edge runtime + use
 ai-pipeline deploy start my_detector            # stage/TensorRT build/smoke/benchmark/policy/activate/health
 ai-pipeline deploy infer my_detector photo.jpg  # real inference on the device
 ai-pipeline health my_detector                  # target health vs active deployment
+ai-pipeline target status                       # what every device actually runs (service, heartbeat)
+ai-pipeline service stop my_detector            # stop/start/restart the installed app, no rebuild
 ai-pipeline rollback my_detector                # restore previous known-good deployment
 ai-pipeline status my_detector                  # pointers, counts, next valid operations
 ai-pipeline -o json status my_detector          # machine-readable envelope

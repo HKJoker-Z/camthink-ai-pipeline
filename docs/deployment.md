@@ -75,6 +75,8 @@ Export and deployment never transition a model. The model record keeps `exports:
 | `activate(dep)` | previous, current | atomic symlink swap `current -> deployments/<dep>` |
 | `health_check()` | healthy, current, details | engine present under `current` |
 | `rollback(to)` | previous, current | re-points `current` (or removes it for `None`) |
+| `service_status()` (optional) | service, systemd_state, current, stopped, heartbeat | reads `<root>/service.json` |
+| `service_stop()` / `service_start()` / `service_restart()` (optional) | previous_state, state | flips `<root>/service.json`; stop records a marker |
 
 The TensorRT engine is **target-owned**: it is built by `prepare` on the device and recorded on
 the Deployment (`runtime_artifact`), never on the ModelVersion or ExportArtifact.
@@ -84,12 +86,37 @@ the Deployment (`runtime_artifact`), never on the ModelVersion or ExportArtifact
 `<root>/inject.json`:
 
 ```json
-{"fail": "verify|stage|prepare|smoke_test|benchmark|activate|health_check|rollback",
+{"fail": "verify|stage|prepare|smoke_test|benchmark|activate|health_check|rollback|service_stop|service_start|service_restart",
  "health_fail_for": ["dep-002"],
  "benchmark_metrics": {"fps": 9.0}}
 ```
 
 `<root>` is `deployment_targets.<name>.root` (relative to `infrastructure.yaml`).
+
+## Service control
+
+`service stop|start|restart <p>` (`ai_pipeline.core.edge_service`) act on the systemd service of
+the project's *current* deployment on the device, through the optional `service_*` methods of
+the target. They never stage, build or re-point anything:
+
+- `stop` writes `<root>/service/stopped.json` (`deployment`, `at`, `by`, `previous_state`) and
+  stops the unit. The marker is how a deliberate stop is told apart from a crash: `health`
+  reports `SERVICE_STOPPED` instead of `UNHEALTHY` while it exists, and `target status` shows
+  `service.state: stopped` with the marker's content. `activate`, `rollback` and `service start`
+  remove it.
+- `start` is refused with `DEVICE_OCCUPIED` when the device's `current` belongs to another
+  project — the request is never satisfied by silently serving a different model. With
+  `--switch` the device is re-pointed to this project's *installed* deployment via the
+  target's `rollback(to)` (symlink + restart, reusing the engine already on disk).
+- `restart` requires `current` to be this project's deployment and verifies it still is after
+  the health wait.
+- Each action appends `{action, at, changed, switched_from, service_state}` to the deployment
+  record's `service_events`; deployment state, pointers and rollback history are untouched.
+
+`target status [<p>] [--target t]` is the device-centric read: for every target it resolves the
+owning project from the `current` ref (`<project>-dep-NNN`), looks up that deployment's model
+version, and reports service state, heartbeat, health and whether the owning project's
+`active_deployment` agrees. It is the authority when per-project pointers are stale.
 
 ## Deployment (`artifacts/<p>/deployments/dep-NNN.json`)
 

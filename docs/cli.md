@@ -24,9 +24,21 @@ Logs always go to **stderr**; stdout carries only the command's output.
 
 | Command | Effect | Typical exit codes |
 |---|---|---|
-| `project create <name> [--task object_detection] [--template default]` | scaffold `projects/<name>/project.yaml`, `README.md`, `data/raw/`; initialise `artifacts/<name>/project.json` | 0, 2 (bad name/task), 3 (exists) |
+| `project create <name> [--task object_detection] [--template default] [config options…]` | scaffold `projects/<name>/project.yaml`, `README.md`, `data/raw/`; initialise `artifacts/<name>/project.json`. Configuration options (below) are applied to the template and validated before anything is written | 0, 2 (bad name/task, `CONFIG_INVALID`, `CONFIG_INFRA_MISMATCH`, `SET_PATH_PROTECTED`), 3 (exists) |
+| `project configure <name> <config options…>` | validated edit of `project.yaml`: the new document must pass schema, task and infrastructure validation, then it is written atomically; `result.changes[] = {path, old, new}`, `result.changed` | 0, 2 (`NO_CHANGES`, `SET_SYNTAX`, `SET_PATH_PROTECTED`, `CONFIG_INVALID`, `CONFIG_INFRA_MISMATCH` — file untouched), 3 (not found) |
+| `project show <name>` | dump the validated configuration (`result.config`) | 0, 2, 3 |
 | `project validate <name>` | load and fully validate the project config, including infrastructure references | 0, 2, 3 (not found) |
 | `project list` | list projects under the projects root with validity | 0 |
+
+Configuration options (M7), identical for `create` and `configure`: `--description`,
+`--classes a,b` (sets `dataset.classes` and resets `labeling.auto.class_map` to the identity map
+unless `--auto-label-map` is given), `--source <dir>` (single `local_images` source),
+`--weights <file>` (single model candidate), `--auto-label-weights`, `--auto-label-map
+'coco:project,…'`, `--auto-label-confidence`, `--epochs`, `--image-size` (training **and**
+export), `--batch-size`, `--device`, `--min-images`, `--min-instances`, `--min-map50`,
+`--target`, `--precision`, `--confidence`, and `--set key.path=value` (repeatable; YAML value;
+`project.name`, `project.task_type`, `schema_version` are protected). Comments in
+`project.yaml` are not preserved.
 | `status <name>` | pointers, entity counts (incl. assets), latest/active runs, `next_operations` | 0, 3 |
 
 ### Data, labels, datasets (M1) — see [datasets.md](datasets.md)
@@ -77,10 +89,23 @@ be verified from the envelope; structured job errors appear as `error.details.ca
 | `deploy infer <name> <image>… [--deployment dep] [--target t]` | real inference on the target with the active (or given) deployment; detections + timings | 0, 1 (`IMAGE_NOT_FOUND`, remote errors) |
 | `target setup <name> [--target t]` | install/update the edge runtime bundle and the `systemd --user` service on the device (idempotent) | 0, 4 (`REMOTE_*`) |
 | `rollback <name> [--to dep]` | restore the previous known-good deployment; `--to` is also the recovery path after `ROLLBACK_FAILED` | 0, 3 (`NO_ACTIVE_DEPLOYMENT`, `NO_PREVIOUS_DEPLOYMENT`), 1 |
-| `health <name> [--target t]` | target health + consistency with `active_deployment` | 0, 1 (`UNHEALTHY`, `POINTER_MISMATCH`) |
+| `health <name> [--target t]` | target health + consistency with `active_deployment` | 0, 1 (`SERVICE_STOPPED` when the service was stopped with `service stop`, `UNHEALTHY`, `POINTER_MISMATCH`) |
 
 Deployment commands return the deployment summary in `result` for every outcome, so the
 verdicts (`acceptance`, `rollback`, `error.phase`) are readable without logs.
+
+### Edge application control (M7) — see [deployment.md](deployment.md#service-control)
+
+| Command | Effect | Typical exit codes |
+|---|---|---|
+| `target status [<name>] [--target t]` | what each device actually runs: `current` ref, owning `project`, `deployment_id`, `model_version`, `service.state` (`running` / `stopped` / `failed` / `inactive` / `unknown` / `none` / `unreachable`), heartbeat, `healthy`, `consistent`; with `<name>` also that project's pointers and `this_project_is_current`. Read-only; device state wins over project pointers | 0 always (unreachable devices are reported inline) |
+| `service status <name>` | alias of `target status <name>` | 0 |
+| `service stop <name> [--target t]` | write a stop marker on the device and stop the inference service of the project's current deployment; nothing is removed or re-pointed | 0 (idempotent, `changed: false` if already stopped), 3 (`NO_ACTIVE_DEPLOYMENT`, `DEVICE_OCCUPIED`, `DEPLOYMENT_NOT_INSTALLED`), 1 (`SERVICE_STOP_FAILED`, `TARGET_NO_SERVICE*`), 4 |
+| `service start <name> [--target t] [--switch]` | clear the marker and start the service of the installed deployment (no staging, no engine build), wait for health, verify `current`. Refuses to replace another project's deployment unless `--switch` re-points the device to this project's installed deployment | 0 (idempotent), 3 (`DEVICE_OCCUPIED`, …), 1 (`SERVICE_START_FAILED`), 4 |
+| `service restart <name> [--target t]` | restart the service and wait for health; deployment id and model version unchanged | 0, 3, 1 (`SERVICE_RESTART_FAILED`), 4 |
+
+Service actions are appended to the deployment record as `service_events` (visible with
+`deploy status <name> <dep> --full`).
 
 ## JSON envelope
 
