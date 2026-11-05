@@ -430,11 +430,12 @@ class CamThinkNG4511Target:
         """Service state, device ``current``, stop marker and heartbeat in one round trip."""
         root = shlex.quote(self.root)
         is_active = self._service_cmd("is-active")
+        # Files may lack a trailing newline, hence the `echo` after each `cat`.
         cmd = (
-            f"echo '__STATE__'; {is_active + ' 2>/dev/null' if is_active else 'echo none'}; "
-            f"echo '__CURRENT__'; readlink {root}/current 2>/dev/null; "
-            f"echo '__STOPPED__'; cat {shlex.quote(self._stop_marker)} 2>/dev/null; "
-            f"echo '__HEARTBEAT__'; cat {root}/service/status.json 2>/dev/null; true"
+            f"echo; echo '__STATE__'; {is_active + ' 2>/dev/null' if is_active else 'echo none'}; "
+            f"echo; echo '__CURRENT__'; readlink {root}/current 2>/dev/null; "
+            f"echo; echo '__STOPPED__'; cat {shlex.quote(self._stop_marker)} 2>/dev/null; "
+            f"echo; echo '__HEARTBEAT__'; cat {root}/service/status.json 2>/dev/null; true"
         )
         out = self.host.run(cmd, timeout=60, check=False).stdout
         sections: dict[str, str] = {}
