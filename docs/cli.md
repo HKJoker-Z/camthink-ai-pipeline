@@ -107,6 +107,26 @@ verdicts (`acceptance`, `rollback`, `error.phase`) are readable without logs.
 Service actions are appended to the deployment record as `service_events` (visible with
 `deploy status <name> <dep> --full`).
 
+### Camera live view and monitoring (M9) — see [ng4511-deployment.md](ng4511-deployment.md#camera-live-view-m9)
+
+All `app` commands act on the device that runs `<name>`'s active deployment (or `--target t`)
+and refuse (`DEVICE_OCCUPIED`, exit 3) to configure, start or read metrics of a device whose
+`current` belongs to another project. Camera URLs are read from **stdin only** and stored only
+on the device (`<root>/service/app.json`, mode 0600); every output masks them
+(`rtsp://***@host/path`).
+
+| Command | Effect | Typical exit codes |
+|---|---|---|
+| `app source set <name> [--name cam0] [--add] [--test/--no-test] [--seconds 10] [--restart] [--target t]` (URL on stdin) | probe the camera on the device, then write it as the (or, with `--add`, an additional) source. Reports `restart_required.inference` when the service is running (`--restart` applies immediately — interrupts detection briefly) | 0, 1 (`SOURCE_UNREACHABLE`: old config kept), 2 (`APP_SOURCE_STDIN_REQUIRED`, `APP_SOURCE_EMPTY`, `APP_CONFIG_INVALID`), 3 (`DEVICE_OCCUPIED`, `NO_ACTIVE_DEPLOYMENT`), 4 |
+| `app source show <name>` | masked device config (`sources`, `inference`, `liveview`), validation problems, service state | 0 |
+| `app source test <name> [--stdin] [--seconds 10]` | decode frames on the device from the saved sources (or a candidate URL on stdin): `frames`, `decode_fps`, `first_frame_s`, `backend`, `error`. Opens a short extra RTSP session; the running service is untouched | 0 ok, 1 when any source failed, 3 (`NO_SOURCE`) |
+| `app source clear <name>` | remove all sources (the service falls back to the sample loop on its next start/restart) | 0, 3 |
+| `app configure <name> [--inference-fps f] [--confidence c\|default] [--width w] [--height h] [--display-fps f] [--quality q] [--port n] [--backend b] [--latency-ms n]` | write settings; `hot_reloaded` lists what the running service picked up (fps, confidence, display fps, quality); `restart_required` (`inference` for width/height/backend/latency, `liveview` for port/bind) names what still needs `service restart` / `app liveview restart` | 0, 2 (`APP_CONFIG_INVALID`, `APP_CONFIG_NOOP`), 3 |
+| `app liveview start\|stop\|restart <name>` | the live-view web server only (systemd user unit `liveview_service_name`); inference is never touched (`inference.affected: false`). `start`/`restart` verify `http://<liveview_host>:<port>/healthz` from the AI server → `liveview.url_check.verified`; `start` needs a configured source | 0 (idempotent), 1 (`LIVEVIEW_START_FAILED`), 3 (`NO_SOURCE`, `DEVICE_OCCUPIED`), 4 |
+| `app liveview url <name>` | `url` (null when the server is stopped) and `url_verified` | 0 |
+| `app status <name>` / `app liveview status <name>` | `ownership`, `inference` (state, `mode` `rtsp`/`samples`, heartbeat), `camera` (state + per-channel connectivity/reconnects/error), `liveview` (+ URL check), masked `config`, `config_restart_required`, `warnings`. Read-only; exit 0 even when the device runs another project (then `ownership.matches false`, no camera data) | 0, 4 |
+| `app metrics <name>` | from the service's 1 Hz stats: per channel `detection_fps`/`target_fps`, `input_fps`, `inference_ms_p50/p95`, `e2e_ms_p50/p95`, `skipped_frames`, `camera_connected`, `camera_reconnects`, `last_inference_age_s`, detections; `system` (`cpu_pct`, `gpu_pct`, `ram_used_mb`, temperatures, `power_total_mw`, `power_mode`); `liveview` (viewers, publish fps, encode ms). `available: false` + `reason` (and `null` sections) when there are no fresh stats — values are never estimated | 0, 3 (`DEVICE_OCCUPIED`), 4 |
+
 ## JSON envelope
 
 ```json

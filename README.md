@@ -62,6 +62,9 @@ ai-pipeline deploy infer my_detector photo.jpg  # real inference on the device
 ai-pipeline health my_detector                  # target health vs active deployment
 ai-pipeline target status                       # what every device actually runs (service, heartbeat)
 ai-pipeline service stop my_detector            # stop/start/restart the installed app, no rebuild
+echo "rtsp://user:pw@cam/stream" | ai-pipeline app source set my_detector   # camera (stdin, device-only)
+ai-pipeline app liveview start my_detector      # webpage with live boxes + metrics; URL verified
+ai-pipeline app metrics my_detector             # detection fps, latency, CPU/GPU/RAM, camera state
 ai-pipeline rollback my_detector                # restore previous known-good deployment
 ai-pipeline status my_detector                  # pointers, counts, next valid operations
 ai-pipeline -o json status my_detector          # machine-readable envelope

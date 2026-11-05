@@ -8,6 +8,9 @@
 #   aip connection-test              read-only self-test of the server, CLI, projects, devices
 #   aip upload <project> <name.zip>  receive a dataset archive on stdin into
 #                                    projects/<project>/data/uploads/<name>/ (the only write path)
+#   aip app source set <project>     camera URL (with credentials) on stdin, e.g.
+#                                    "rtsp://u:pw@cam/stream" | ssh ai-server app source set p
+#                                    (stdin is passed through to the CLI; never put it in args)
 #
 # Installed as an SSH forced command (authorized_keys: restrict,command="…/aip"), the
 # arguments come from SSH_ORIGINAL_COMMAND, so that key can run nothing but the CLI.
