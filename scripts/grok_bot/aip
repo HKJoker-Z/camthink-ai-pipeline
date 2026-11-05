@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Grok Bot entry point to the pipeline CLI on the AI server.
+#
+#   aip <ai-pipeline args...>        run the CLI with --output json from the repo + .venv
+#   aip detach <ai-pipeline args...> start a long synchronous command detached (deploy start,
+#                                    rollback, target setup); prints a handle
+#   aip detach-status <handle>       exit code + envelope of a detached command
+#   aip connection-test              read-only self-test of the server, CLI, projects, devices
+#
+# Installed as an SSH forced command (authorized_keys: restrict,command="…/aip"), the
+# arguments come from SSH_ORIGINAL_COMMAND, so that key can run nothing but the CLI.
+# Arguments are split on whitespace only (no shell evaluation; no quoting support).
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="${AIP_REPO:-$(cd "$HERE/../.." && pwd)}"   # the checkout this script lives in
+export AIP_REPO="$REPO"
+cd "$REPO"
+PY="$REPO/.venv/bin/python"
+
+if [ $# -eq 0 ] && [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
+  read -r -a ARGS <<< "$SSH_ORIGINAL_COMMAND"
+  set -- "${ARGS[@]}"
+fi
+
+case "${1:-}" in
+  detach)          shift; exec "$PY" "$HERE/detach.py" start "$@" ;;
+  detach-status)   shift; exec "$PY" "$HERE/detach.py" status "$@" ;;
+  connection-test) exec "$PY" "$HERE/connection_test.py" ;;
+  "")              echo "usage: aip <ai-pipeline args> | detach <args> | detach-status <handle> | connection-test" >&2; exit 2 ;;
+esac
+
+exec "$REPO/.venv/bin/ai-pipeline" -o json "$@"

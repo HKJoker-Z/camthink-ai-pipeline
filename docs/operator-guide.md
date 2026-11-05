@@ -5,7 +5,9 @@ operation is a CLI command with `--output json`, stable ids, meaningful exit cod
 `next_operations`; nothing requires editing source code or logging into the device.
 
 Where: the AI server (`ai-server`, user `redahk`), repository `~/camthink-ai-pipeline`,
-`. .venv/bin/activate` first. All commands take the project name explicitly.
+`. .venv/bin/activate` first. All commands take the project name explicitly. An agent that
+operates the pipeline remotely (Grok Bot) uses the SSH entry point and rules in
+[grok-bot-operator.md](grok-bot-operator.md).
 
 ## 1. Commands
 
