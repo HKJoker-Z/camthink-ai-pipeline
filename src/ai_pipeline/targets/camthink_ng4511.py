@@ -110,6 +110,15 @@ class CamThinkNG4511Target:
             return None
         return self._systemctl(action, self.cfg.service_name)
 
+    @property
+    def _stop_marker(self) -> str:
+        """Written by `service_stop`, removed by anything that (re)starts the service, so a
+        deliberate stop is distinguishable from a crash."""
+        return f"{self.root}/service/stopped.json"
+
+    def _clear_stop_marker_cmd(self) -> str:
+        return f"rm -f {shlex.quote(self._stop_marker)}"
+
     def _remote_runtime_version(self) -> str | None:
         res = self.host.run(
             f"cat {shlex.quote(self.root)}/runtime/camthink_edge/__init__.py 2>/dev/null | grep '^VERSION'",
@@ -383,7 +392,7 @@ class CamThinkNG4511Target:
         restarted = False
         cmd = self._service_cmd("restart")
         if cmd:
-            self.host.run(cmd, timeout=120)
+            self.host.run(f"{self._clear_stop_marker_cmd()}; {cmd}", timeout=120)
             restarted = True
         return {
             "previous": previous,
@@ -396,7 +405,108 @@ class CamThinkNG4511Target:
         args = ["health", "--root", self.root]
         if self.cfg.service_name:
             args += ["--service", self.cfg.service_name]
-        return self.host.run_json(self._edge(*args), timeout=300)
+        result = self.host.run_json(self._edge(*args), timeout=300)
+        details = result.setdefault("details", {})
+        if not result.get("healthy") and details.get("service_state") not in (None, "active"):
+            marker = self._read_stop_marker()
+            if marker is not None:
+                details["stopped_intentionally"] = marker
+        return result
+
+    # -- service control (no engine rebuild, no pointer change) -----------------------------------
+
+    def _read_stop_marker(self) -> dict[str, Any] | None:
+        res = self.host.run(
+            f"cat {shlex.quote(self._stop_marker)} 2>/dev/null", timeout=30, check=False
+        )
+        if res.returncode != 0 or not res.stdout.strip():
+            return None
+        try:
+            return json.loads(res.stdout)
+        except json.JSONDecodeError:
+            return {"raw": res.stdout.strip()[:200]}
+
+    def service_status(self) -> dict[str, Any]:
+        """Service state, device ``current``, stop marker and heartbeat in one round trip."""
+        root = shlex.quote(self.root)
+        is_active = self._service_cmd("is-active")
+        cmd = (
+            f"echo '__STATE__'; {is_active + ' 2>/dev/null' if is_active else 'echo none'}; "
+            f"echo '__CURRENT__'; readlink {root}/current 2>/dev/null; "
+            f"echo '__STOPPED__'; cat {shlex.quote(self._stop_marker)} 2>/dev/null; "
+            f"echo '__HEARTBEAT__'; cat {root}/service/status.json 2>/dev/null; true"
+        )
+        out = self.host.run(cmd, timeout=60, check=False).stdout
+        sections: dict[str, str] = {}
+        key = None
+        for line in out.splitlines():
+            if line.startswith("__") and line.endswith("__"):
+                key = line.strip("_").lower()
+                sections[key] = ""
+            elif key:
+                sections[key] += line + "\n"
+
+        def _json(text: str) -> dict[str, Any] | None:
+            text = text.strip()
+            if not text:
+                return None
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return {"raw": text[:200]}
+
+        link = sections.get("current", "").strip()
+        state = sections.get("state", "").strip() or "unknown"
+        return {
+            "service": self.cfg.service_name,
+            "systemd_state": state if self.cfg.service_name else None,
+            "current": link.rsplit("/", 1)[-1] if link else None,
+            "stopped": _json(sections.get("stopped", "")),
+            "heartbeat": _json(sections.get("heartbeat", "")),
+        }
+
+    def _require_service(self) -> str:
+        if not self.cfg.service_name:
+            raise OperationError(
+                f"target {self.name} has no inference service configured (service_name: null)",
+                code="TARGET_NO_SERVICE",
+                hint="Set deployment_targets.<name>.service_name in infrastructure.yaml and run "
+                "`target setup`.",
+            )
+        return self.cfg.service_name
+
+    def service_stop(self) -> dict[str, Any]:
+        self._require_service()
+        before = self._service_state()
+        marker = {
+            "deployment": self.current(),
+            "at": utc_now_iso(),
+            "by": "ai-pipeline service stop",
+            "previous_state": before,
+        }
+        self.host.run(
+            f"mkdir -p {shlex.quote(self.root + '/service')} && "
+            f"printf '%s' {shlex.quote(json.dumps(marker))} > {shlex.quote(self._stop_marker)} && "
+            f"{self._service_cmd('stop')}",
+            timeout=120,
+        )
+        return {"previous_state": before, "state": self._service_state(), "stopped": marker}
+
+    def service_start(self) -> dict[str, Any]:
+        self._require_service()
+        before = self._service_state()
+        self.host.run(
+            f"{self._clear_stop_marker_cmd()} && {self._service_cmd('start')}", timeout=120
+        )
+        return {"previous_state": before, "state": self._service_state()}
+
+    def service_restart(self) -> dict[str, Any]:
+        self._require_service()
+        before = self._service_state()
+        self.host.run(
+            f"{self._clear_stop_marker_cmd()} && {self._service_cmd('restart')}", timeout=120
+        )
+        return {"previous_state": before, "state": self._service_state()}
 
     def current(self) -> str | None:
         res = self.host.run(
@@ -420,6 +530,8 @@ class CamThinkNG4511Target:
                 timeout=30,
             )
             cmd = self._service_cmd("restart")
+            if cmd:
+                cmd = f"{self._clear_stop_marker_cmd()}; {cmd}"
         if cmd:
             self.host.run(cmd, timeout=120, check=to_deployment_id is not None)
         return {"previous": previous, "current": to_deployment_id, "at": utc_now_iso()}

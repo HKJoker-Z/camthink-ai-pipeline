@@ -206,6 +206,18 @@ def health_cmd(
             )
         else:
             message = result["details"].get("reason", "target unhealthy")
+        stopped = result["details"].get("stopped_intentionally")
+        if not result["healthy"]:
+            code = "SERVICE_STOPPED" if stopped else "UNHEALTHY"
+            hint = (
+                f"The service was stopped deliberately (`service stop`); `service start {name}` "
+                "resumes it."
+                if stopped
+                else f"See `deploy status {name}` and consider `rollback {name}`."
+            )
+        else:
+            code = "POINTER_MISMATCH"
+            hint = f"See `target status --target {result['target']}` for the owning project."
         return Envelope(
             operation="health",
             project=name,
@@ -213,12 +225,7 @@ def health_cmd(
             result=result,
             error=None
             if ok
-            else {
-                "code": "UNHEALTHY" if not result["healthy"] else "POINTER_MISMATCH",
-                "message": message,
-                "details": result["details"],
-                "hint": f"See `deploy status {name}` and consider `rollback {name}`.",
-            },
+            else {"code": code, "message": message, "details": result["details"], "hint": hint},
             next_operations=project_status(project)["next_operations"],
             human_text=(
                 f"target {result['target']}: {'healthy' if result['healthy'] else 'UNHEALTHY'}; "

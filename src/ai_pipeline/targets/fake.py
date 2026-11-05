@@ -106,6 +106,22 @@ class FakeTarget:
         os.symlink(Path("deployments") / deployment_id, tmp)
         os.replace(tmp, self.current_link)
 
+    # -- simulated inference service (service.json) --------------------------------------
+
+    @property
+    def _service_path(self) -> Path:
+        return self.root / "service.json"
+
+    def _service(self) -> dict[str, Any]:
+        # Absent file = running: deployments made before service simulation existed stay healthy.
+        if not self._service_path.is_file():
+            return {"state": "active", "stopped": None}
+        return read_json(self._service_path)
+
+    def _set_service(self, state: str, stopped: dict[str, Any] | None = None) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(self._service_path, {"state": state, "stopped": stopped})
+
     # -- protocol -------------------------------------------------------------------
 
     def verify(self) -> dict[str, Any]:
@@ -204,6 +220,7 @@ class FakeTarget:
             )
         previous = self.current()
         self._set_current(deployment_id)
+        self._set_service("active")
         return {"previous": previous, "current": deployment_id, "at": utc_now_iso()}
 
     def health_check(self) -> dict[str, Any]:
@@ -222,12 +239,60 @@ class FakeTarget:
                 "current": current,
                 "details": {**details, "reason": "injected: inference service unhealthy"},
             }
+        svc = self._service()
+        details["service_state"] = svc["state"]
+        if svc["state"] != "active":
+            if svc.get("stopped"):
+                details["stopped_intentionally"] = svc["stopped"]
+            return {
+                "healthy": False,
+                "current": current,
+                "details": {**details, "reason": f"service fake-inference is {svc['state']}"},
+            }
         engine = self._dep_dir(current) / "model.engine"
         healthy = engine.is_file()
         details.update(
             {"service": "running" if healthy else "missing-engine", "last_inference_age_s": 0.4}
         )
         return {"healthy": healthy, "current": current, "details": details}
+
+    # -- service control ---------------------------------------------------------------
+
+    def service_status(self) -> dict[str, Any]:
+        svc = self._service()
+        current = self.current()
+        return {
+            "service": "fake-inference",
+            "systemd_state": svc["state"],
+            "current": current,
+            "stopped": svc.get("stopped"),
+            "heartbeat": {"deployment": current, "fps": 30.0, "frames": 1000, "errors": 0}
+            if svc["state"] == "active" and current
+            else None,
+        }
+
+    def service_stop(self) -> dict[str, Any]:
+        self._maybe_fail("service_stop")
+        before = self._service()["state"]
+        marker = {
+            "deployment": self.current(),
+            "at": utc_now_iso(),
+            "by": "ai-pipeline service stop",
+        }
+        self._set_service("inactive", marker)
+        return {"previous_state": before, "state": "inactive", "stopped": marker}
+
+    def service_start(self) -> dict[str, Any]:
+        self._maybe_fail("service_start")
+        before = self._service()["state"]
+        self._set_service("active")
+        return {"previous_state": before, "state": "active"}
+
+    def service_restart(self) -> dict[str, Any]:
+        self._maybe_fail("service_restart")
+        before = self._service()["state"]
+        self._set_service("active")
+        return {"previous_state": before, "state": "active"}
 
     def current(self) -> str | None:
         if not self.current_link.is_symlink():
@@ -290,4 +355,5 @@ class FakeTarget:
                 details={"to": to_deployment_id},
             )
         self._set_current(to_deployment_id)
+        self._set_service("active" if to_deployment_id else "inactive")
         return {"previous": previous, "current": to_deployment_id, "at": utc_now_iso()}
