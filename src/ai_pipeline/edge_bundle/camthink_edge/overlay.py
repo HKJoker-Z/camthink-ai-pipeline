@@ -30,6 +30,9 @@ def class_colour_hex(class_id: int) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
+HEADER_H = 22
+
+
 def draw(frame: np.ndarray, detections: list[dict[str, Any]], header: str = "") -> np.ndarray:
     """Return a BGR copy of ``frame`` (BGR or BGRx) with boxes, labels and an optional header."""
     import cv2  # type: ignore
@@ -41,19 +44,20 @@ def draw(frame: np.ndarray, detections: list[dict[str, Any]], header: str = "") 
     h, w = img.shape[:2]
     thick = 2 if w >= 960 else 1
     scale = 0.55 if w >= 960 else 0.45
+    top = HEADER_H if header else 0  # keep labels out from under the header bar
     for d in detections:
         x1, y1, x2, y2 = (int(round(v)) for v in d["bbox_xyxy"])
         col = class_colour(d.get("class_id", 0))
         cv2.rectangle(img, (x1, y1), (x2, y2), col, thick)
         label = f"{d.get('class_name', '?')} {float(d.get('confidence', 0)):.2f}"
         (tw, th), base = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)
-        ty = y1 - 4 if y1 - th - 6 > 0 else y1 + th + 6
+        ty = y1 - 4 if y1 - th - 6 > top else y1 + th + 6
         cv2.rectangle(img, (x1, ty - th - 4), (x1 + tw + 6, ty + base - 2), col, -1)
         cv2.putText(
             img, label, (x1 + 3, ty - 1), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 1, cv2.LINE_AA
         )
     if header:
-        cv2.rectangle(img, (0, 0), (w, 22), (0, 0, 0), -1)
+        cv2.rectangle(img, (0, 0), (w, HEADER_H), (0, 0, 0), -1)
         cv2.putText(
             img, header, (6, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA
         )

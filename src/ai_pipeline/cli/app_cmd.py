@@ -89,7 +89,13 @@ def source_set_cmd(
     test: bool = typer.Option(
         True, "--test/--no-test", help="Decode a few frames on the device before saving."
     ),
-    seconds: float = typer.Option(5.0, "--seconds", min=1.0, max=60.0, help="Probe length."),
+    seconds: float = typer.Option(
+        10.0,
+        "--seconds",
+        min=1.0,
+        max=60.0,
+        help="Probe length (the first frame can take several seconds: H.264/H.265 keyframe).",
+    ),
     restart: bool = typer.Option(
         False,
         "--restart",
@@ -180,7 +186,13 @@ def source_test_cmd(
     ctx: typer.Context,
     name: str = _NAME,
     target: str | None = _TARGET,
-    seconds: float = typer.Option(5.0, "--seconds", min=1.0, max=60.0),
+    seconds: float = typer.Option(
+        10.0,
+        "--seconds",
+        min=1.0,
+        max=60.0,
+        help="Probe length (the first frame can take several seconds: H.264/H.265 keyframe).",
+    ),
     stdin: bool = typer.Option(
         False, "--stdin", help="Test a candidate URL from stdin instead of the saved sources."
     ),

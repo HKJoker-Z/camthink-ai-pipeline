@@ -359,17 +359,17 @@ class FakeTarget:
         self.root.mkdir(parents=True, exist_ok=True)
         write_json_atomic(self.root / "liveview.json", {"state": state, "enabled": enabled})
 
-    def liveview_url(self) -> str | None:
-        return "http://fake-device.lan:8080/"
+    def liveview_url(self, port: int | None = None) -> str | None:
+        return f"http://fake-device.lan:{port or 8080}/"
 
-    def liveview_status(self) -> dict[str, Any]:
+    def liveview_status(self, port: int | None = None) -> dict[str, Any]:
         lv = self._liveview()
         return {
             "service": "fake-liveview",
             "systemd_state": lv["state"],
             "enabled": lv["enabled"],
-            "port": 8080,
-            "url": self.liveview_url(),
+            "port": port or 8080,
+            "url": self.liveview_url(port),
         }
 
     def liveview_start(self) -> dict[str, Any]:

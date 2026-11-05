@@ -75,8 +75,11 @@ def gst_pipeline(url: str, width: int, height: int, *, latency_ms: int = 200) ->
     """
     loc = url.replace('"', '\\"')
     if is_rtsp(url):
+        # tcp-timeout/timeout (us): a silently cut link errors out of read() in ~10 s instead
+        # of GStreamer's 20 s default, so the reconnect loop takes over sooner.
         src = (
-            f'rtspsrc location="{loc}" protocols=tcp latency={int(latency_ms)} drop-on-latency=true'
+            f'rtspsrc location="{loc}" protocols=tcp latency={int(latency_ms)} '
+            "drop-on-latency=true tcp-timeout=10000000 timeout=10000000"
         )
     else:
         src = f'filesrc location="{Path(url).resolve()}"'

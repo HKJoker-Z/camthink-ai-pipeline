@@ -67,11 +67,19 @@ def _gpu_freq_mhz() -> float | None:
     return None
 
 
+_GPU_LOAD_PATHS = (
+    "/sys/devices/platform/gpu.0/load",  # JetPack 6 (Orin)
+    "/sys/devices/gpu.0/load",  # JetPack 4/5
+    "/sys/devices/platform/17000000.gpu/load",
+)
+
+
 def _gpu_load_pct() -> float | None:
-    """``/sys/devices/gpu.0/load`` (tenths of a percent) - readable without root on Jetson."""
-    v = _read("/sys/devices/gpu.0/load")
-    if v and v.isdigit():
-        return round(int(v) / 10.0, 1)
+    """GPU load in tenths of a percent from sysfs - readable without root on Jetson."""
+    for path in _GPU_LOAD_PATHS:
+        v = _read(path)
+        if v and v.isdigit():
+            return round(int(v) / 10.0, 1)
     return None
 
 

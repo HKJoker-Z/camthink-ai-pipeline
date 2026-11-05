@@ -659,13 +659,15 @@ class CamThinkNG4511Target:
             return self.cfg.liveview_host
         return self.host.resolved_hostname()
 
-    def liveview_url(self) -> str | None:
+    def liveview_url(self, port: int | None = None) -> str | None:
+        """``port`` is the one from the device's app.json when the caller knows it; the
+        target's ``liveview_port`` is only the default used to seed that file."""
         host = self.liveview_host()
         if not host:
             return None
-        return f"http://{host}:{self.cfg.liveview_port}/"
+        return f"http://{host}:{port or self.cfg.liveview_port}/"
 
-    def liveview_status(self) -> dict[str, Any]:
+    def liveview_status(self, port: int | None = None) -> dict[str, Any]:
         cmd = self._liveview_cmd("is-active")
         if cmd is None:
             return {"service": None, "systemd_state": None, "enabled": None, "url": None}
@@ -680,8 +682,8 @@ class CamThinkNG4511Target:
             "service": self.cfg.liveview_service_name,
             "systemd_state": state.strip() or "unknown",
             "enabled": enabled.strip() or "unknown",
-            "port": self.cfg.liveview_port,
-            "url": self.liveview_url(),
+            "port": port or self.cfg.liveview_port,
+            "url": self.liveview_url(port),
         }
 
     def liveview_start(self) -> dict[str, Any]:

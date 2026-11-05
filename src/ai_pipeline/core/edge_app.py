@@ -135,8 +135,17 @@ class AppContext:
     # -- app config -----------------------------------------------------------------------------
 
     def read_config(self) -> tuple[dict[str, Any], bool]:
+        """(config with defaults, existed). A missing file is seeded with the target's
+        ``liveview_port``; afterwards the device file is the source of truth for the port."""
         raw = self.target.app_config_read()
-        return appcfg.merge_defaults(raw or {}), raw is not None
+        cfg = appcfg.merge_defaults(raw or {})
+        if raw is None:
+            tcfg = self.project.settings.infra.deployment_targets[self.target_name]
+            cfg["liveview"]["port"] = int(getattr(tcfg, "liveview_port", cfg["liveview"]["port"]))
+        return cfg, raw is not None
+
+    def liveview_port(self) -> int:
+        return int(self.read_config()[0]["liveview"]["port"])
 
     def write_config(self, cfg: dict[str, Any]) -> None:
         problems = appcfg.validate(cfg)
@@ -189,7 +198,7 @@ def source_set(
     name: str = "cam0",
     add: bool = False,
     target_name: str | None = None,
-    test_seconds: float | None = 5.0,
+    test_seconds: float | None = 10.0,
     restart: bool = False,
 ) -> dict[str, Any]:
     """Set (or add) a camera source. ``url`` comes from stdin — never from argv. Optionally
@@ -306,7 +315,7 @@ def source_test(
     project: Project,
     *,
     url: str | None = None,
-    seconds: float = 5.0,
+    seconds: float = 10.0,
     target_name: str | None = None,
 ) -> dict[str, Any]:
     """Decode a few frames on the device from the configured sources (or a candidate ``url``
@@ -394,8 +403,8 @@ def check_url(url: str | None, *, timeout: float = URL_CHECK_TIMEOUT_S) -> dict[
     return out
 
 
-def _liveview_view(ctx: AppContext, *, verify: bool) -> dict[str, Any]:
-    lv = ctx.target.liveview_status()
+def _liveview_view(ctx: AppContext, *, verify: bool, port: int | None = None) -> dict[str, Any]:
+    lv = ctx.target.liveview_status(port or ctx.liveview_port())
     state = lv.get("systemd_state")
     out = {
         "service": lv.get("service"),
@@ -454,7 +463,8 @@ def liveview_action(
                 "inference service runs in sample-image mode (started before the camera was "
                 f"configured): `service restart {project.name}` switches it to the camera"
             )
-    before = _liveview_view(ctx, verify=False)
+    port = int(cfg["liveview"]["port"])
+    before = _liveview_view(ctx, verify=False, port=port)
     blog = log.bind(project=project.name, target=ctx.target_name, action=action)
     changed = False
     if action == "stop":
@@ -473,7 +483,7 @@ def liveview_action(
         op = ctx.target.liveview_restart()
         changed = True
     blog.info("liveview %s (changed=%s)", action, changed)
-    after = _liveview_view(ctx, verify=action != "stop")
+    after = _liveview_view(ctx, verify=action != "stop", port=port)
     if action != "stop" and after["state"] != "running":
         raise OperationError(
             f"live-view service did not come up on {ctx.target_name} ({after['systemd_state']})",
@@ -567,7 +577,7 @@ def status(project: Project, *, target_name: str | None = None) -> dict[str, Any
     fresh = _stats_fresh(stats)
     inf_state = ctx.inference_state()
     liveview = (
-        _liveview_view(ctx, verify=True)
+        _liveview_view(ctx, verify=True, port=int(cfg["liveview"]["port"]))
         if callable(getattr(ctx.target, "liveview_status", None))
         else None
     )
