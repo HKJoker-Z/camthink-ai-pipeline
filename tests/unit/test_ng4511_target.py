@@ -40,6 +40,7 @@ class FakeSsh:
         self.deployments: dict[str, set[str]] = {}  # dep -> files
         self.current: str | None = None
         self.service_state = "inactive"
+        self.stop_marker: str | None = None  # contents of service/stopped.json
         self.commands: list[str] = []
         self.uploads: list[tuple[list[str], str]] = []
         self.unit_installed = False
@@ -96,6 +97,29 @@ class FakeSsh:
             )
         if "-m camthink_edge" in c:
             return self._edge(c)
+        # -- service control ------------------------------------------------------------
+        if "__STATE__" in c:  # service_status(): one composed round trip
+            cur = f"deployments/{self.current}" if self.current else ""
+            hb = (
+                json.dumps({"deployment": self.current, "fps": 5.0, "frames": 42, "errors": 0})
+                if self.service_state == "active"
+                else ""
+            )
+            return (
+                f"__STATE__\n{self.service_state}\n__CURRENT__\n{cur}\n__STOPPED__\n"
+                f"{self.stop_marker or ''}\n__HEARTBEAT__\n{hb}\n",
+                0,
+            )
+        if "stopped.json" in c and c.startswith("cat "):
+            return (self.stop_marker, 0) if self.stop_marker else ("", 1)
+        if "stopped.json" in c and "printf" in c:  # service_stop(): write marker, then stop
+            self.stop_marker = shlex.split(c.split("printf '%s' ", 1)[1].split(" > ")[0])[0]
+            self.service_state = "inactive"
+            return "", 0
+        if "stopped.json" in c and c.startswith("rm -f"):  # marker cleared, then start/restart
+            self.stop_marker = None
+            rest = c.split(";", 1)[1] if ";" in c else c.split("&&", 1)[1]
+            return self._handle(rest.strip())
         if c.startswith("test -e ") and "/deployments/" in c:
             dep = c.split("/deployments/")[1].split()[0].strip("'")
             return "", 0 if dep in self.deployments else 1
@@ -421,3 +445,70 @@ def test_stage_refuses_existing_deployment_dir():
     with pytest.raises(OperationError) as ei:
         t.stage("dep-001", Path("/nonexistent.onnx"), {})
     assert ei.value.code == "TARGET_DEPLOYMENT_EXISTS"
+
+
+# -- M7: service control (stop marker, no engine rebuild) ---------------------------------------
+
+
+def test_service_stop_start_restart_commands_and_marker():
+    fake = FakeSsh()
+    fake.deployments["demo-dep-001"] = {"model.onnx", "model.engine"}
+    fake.current, fake.service_state = "demo-dep-001", "active"
+    t = _target(fake)
+
+    st = t.service_status()
+    assert st == {
+        "service": "camthink-ai-inference",
+        "systemd_state": "active",
+        "current": "demo-dep-001",
+        "stopped": None,
+        "heartbeat": {"deployment": "demo-dep-001", "fps": 5.0, "frames": 42, "errors": 0},
+    }
+
+    res = t.service_stop()
+    assert res["previous_state"] == "active" and res["state"] == "inactive"
+    assert res["stopped"]["deployment"] == "demo-dep-001" and fake.stop_marker
+    assert json.loads(fake.stop_marker)["by"] == "ai-pipeline service stop"
+    assert any("systemctl --user stop camthink-ai-inference" in c for c in fake.commands)
+    # health reports the deliberate stop; nothing was staged/built/re-pointed
+    hc = t.health_check()
+    assert hc["healthy"] is False and hc["details"]["stopped_intentionally"]["deployment"]
+    assert fake.current == "demo-dep-001" and "model.engine" in fake.deployments["demo-dep-001"]
+    assert not any("camthink_edge build" in c for c in fake.commands)
+    assert t.service_status()["systemd_state"] == "inactive"
+    assert t.service_status()["stopped"]["deployment"] == "demo-dep-001"
+
+    res = t.service_start()
+    assert res == {"previous_state": "inactive", "state": "active"}
+    assert fake.stop_marker is None and fake.service_state == "active"
+    assert t.health_check()["healthy"] is True
+
+    n = len(fake.commands)
+    res = t.service_restart()
+    assert res["state"] == "active" and fake.stop_marker is None
+    assert any("systemctl --user restart" in c for c in fake.commands[n:])
+    assert not any("ln -sfn" in c or "camthink_edge build" in c for c in fake.commands[n:])
+
+
+def test_activate_and_rollback_clear_stop_marker():
+    fake = FakeSsh()
+    fake.deployments["demo-dep-001"] = {"model.onnx", "model.engine"}
+    fake.deployments["demo-dep-002"] = {"model.onnx", "model.engine"}
+    fake.current, fake.service_state = "demo-dep-001", "active"
+    t = _target(fake)
+    t.service_stop()
+    assert fake.stop_marker
+    t.activate("demo-dep-002")
+    assert fake.stop_marker is None and fake.current == "demo-dep-002"
+    t.service_stop()
+    t.rollback("demo-dep-001")
+    assert fake.stop_marker is None and fake.current == "demo-dep-001"
+    assert fake.service_state == "active"
+
+
+def test_service_control_requires_service():
+    t = _target(FakeSsh(), service_name=None)
+    assert t.service_status()["service"] is None
+    with pytest.raises(OperationError) as ei:
+        t.service_stop()
+    assert ei.value.code == "TARGET_NO_SERVICE"
