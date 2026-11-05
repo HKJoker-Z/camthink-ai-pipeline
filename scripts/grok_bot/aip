@@ -6,6 +6,8 @@
 #                                    rollback, target setup); prints a handle
 #   aip detach-status <handle>       exit code + envelope of a detached command
 #   aip connection-test              read-only self-test of the server, CLI, projects, devices
+#   aip upload <project> <name.zip>  receive a dataset archive on stdin into
+#                                    projects/<project>/data/uploads/<name>/ (the only write path)
 #
 # Installed as an SSH forced command (authorized_keys: restrict,command="…/aip"), the
 # arguments come from SSH_ORIGINAL_COMMAND, so that key can run nothing but the CLI.
@@ -27,7 +29,8 @@ case "${1:-}" in
   detach)          shift; exec "$PY" "$HERE/detach.py" start "$@" ;;
   detach-status)   shift; exec "$PY" "$HERE/detach.py" status "$@" ;;
   connection-test) exec "$PY" "$HERE/connection_test.py" ;;
-  "")              echo "usage: aip <ai-pipeline args> | detach <args> | detach-status <handle> | connection-test" >&2; exit 2 ;;
+  upload)          shift; exec "$PY" "$HERE/upload.py" "$@" ;;
+  "")              echo "usage: aip <ai-pipeline args> | detach <args> | detach-status <handle> | connection-test | upload <project> <archive>" >&2; exit 2 ;;
 esac
 
 exec "$REPO/.venv/bin/ai-pipeline" -o json "$@"

@@ -13,14 +13,15 @@ operates the pipeline remotely (Grok Bot) uses the SSH entry point and rules in
 
 | Group | Commands |
 |---|---|
-| project | `project create <p> [--task object_detection]`, `project validate <p>`, `project list` |
+| project | `project create <p> [--task object_detection] [config options…]`, `project configure <p> <config options…>`, `project show <p>`, `project validate <p>`, `project list` |
 | data | `data import <p> [<dir-or-file>]`, `data list <p>` |
 | label | `label import <p> <dir> [--format yolo] [--classes-file f] [--import id]`, `label auto <p> [--wait]`, `label list <p>` |
 | dataset | `dataset validate <p>`, `dataset build <p>`, `dataset list <p>`, `dataset show <p> <ds>` |
 | train / runs | `train start <p> [--dataset ds] [--candidate c] [--wait]`, `run status <p> <run> [--wait] [--tail N]`, `run list <p>`, `run logs <p> <run>`, `run cancel <p> <run>` |
 | evaluate / model | `evaluate run <p> <mv> [--wait]`, `model list <p>`, `model show <p> <mv>`, `model register <p> <run>`, `model select <p> [<mv>]` |
 | export | `export start <p> [<mv>] [--rerun] [--wait]`, `export list <p>`, `export show <p> <exp>` |
-| target / deploy | `target setup <p>`, `target verify <p>`, `deploy start <p> [<mv>] [--export exp] [--target t]`, `deploy status <p> [<dep>] [--full]`, `deploy list <p>`, `deploy infer <p> <img>…`, `rollback <p> [--to dep]`, `health <p>` |
+| target / deploy | `target setup <p>`, `target verify <p>`, `target status [<p>] [--target t]`, `deploy start <p> [<mv>] [--export exp] [--target t]`, `deploy status <p> [<dep>] [--full]`, `deploy list <p>`, `deploy infer <p> <img>…`, `rollback <p> [--to dep]`, `health <p>` |
+| edge service | `service status <p>`, `service stop <p>`, `service start <p> [--switch]`, `service restart <p>` — control the installed application's systemd service without redeploying or rebuilding |
 | overview | `status <p>` |
 
 Global: `-o json`, `-v`/`-vv`, `--infra`, `--artifact-root`. Reference: [cli.md](cli.md).
@@ -125,14 +126,19 @@ The CLI does not enforce approvals; an automation agent must ask before:
 - `deploy start` to a production target (changes what runs on the device; automatic rollback
   exists but the device is briefly disrupted during activation) and `rollback`;
 - `rollback --to <dep>` after `ROLLBACK_FAILED` (device state is unknown);
+- `service stop` (ends inference on the device), `service restart` (interrupts it), and
+  `service start --switch` (replaces the application another project runs on the device);
+  plain `service start` of an application that was stopped with `service stop` is routine;
 - `target setup` (installs/updates the runtime bundle and the user service on the device);
-- editing `project.yaml` acceptance thresholds or `infrastructure.yaml`;
+- `project configure` on a project with an active deployment or a run in progress (and any
+  class change on a project that already has label sets), or editing `infrastructure.yaml`;
 - deleting anything (deployment directories on the device, artifacts, datasets) — the pipeline
   never deletes; no `deploy prune` exists yet;
 - stopping the vendor service or any system service (requires sudo; out of scope);
 - large downloads/trainings on shared GPUs (choose `training.device` to avoid busy GPUs);
 - using `--rerun` on exports or re-evaluating an accepted model (changes verdicts).
 
-Routine, safe without approval: `status`, `*/list`, `*/show`, `health`, `run status/logs`,
-`data import`, `label import/auto`, `dataset validate/build`, `train start`, `evaluate run`,
-`export start`, `model select`, `deploy infer`.
+Routine, safe without approval: `status`, `*/list`, `*/show`, `health`, `target status`,
+`run status/logs`, `project create`/`configure` on a fresh project, `data import`,
+`label import/auto`, `dataset validate/build`, `train start`, `evaluate run`, `export start`,
+`model select`, `deploy infer`, `service start` of a deliberately stopped application.

@@ -20,6 +20,18 @@ activate(dep)                  -> {"previous": dep|None, "current": dep}
 health_check()                 -> {"healthy": bool, "current": dep|None, "details": {...}}
 current()                      -> dep | None
 rollback(to)                   -> {"previous": dep|None, "current": dep|None}
+
+Service control (optional; targets that run a long-lived inference service). None of these
+touch deployment directories, engines or the ``current`` pointer — they only start/stop the
+service process. A stop leaves a marker so that an intentional stop can be told apart from a
+crash by ``health_check`` / ``service_status``:
+
+service_status()               -> {"service": name|None, "systemd_state": "active"|"inactive"|
+                                   "failed"|..., "current": dep|None, "stopped": marker|None,
+                                   "heartbeat": {...}|None}
+service_stop()                 -> {"previous_state": str, "state": str, "stopped": marker}
+service_start()                -> {"previous_state": str, "state": str}
+service_restart()              -> {"previous_state": str, "state": str}
 """
 
 from __future__ import annotations
@@ -61,3 +73,12 @@ class DeploymentTarget(Protocol):
     def infer(self, images: list[Path], *, deployment_id: str | None = None) -> dict[str, Any]: ...
 
     def configure(self, **knobs: Any) -> None: ...
+
+    # Optional service control (`service start|stop|restart`, `target status`):
+    def service_status(self) -> dict[str, Any]: ...
+
+    def service_stop(self) -> dict[str, Any]: ...
+
+    def service_start(self) -> dict[str, Any]: ...
+
+    def service_restart(self) -> dict[str, Any]: ...

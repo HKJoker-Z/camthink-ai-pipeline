@@ -119,6 +119,10 @@ ai-pipeline deploy status demo_person_detection --full
 ai-pipeline deploy infer  demo_person_detection a.jpg b.jpg   # real inference with the active deployment
 ai-pipeline health        demo_person_detection
 ai-pipeline rollback      demo_person_detection      # previous known-good; --to <dep> after ROLLBACK_FAILED
+ai-pipeline target status                              # every device: current, project, model, service state, heartbeat
+ai-pipeline service stop    demo_person_detection      # systemctl --user stop + service/stopped.json marker; engine stays
+ai-pipeline service start   demo_person_detection      # resume the installed deployment (no TensorRT rebuild)
+ai-pipeline service restart demo_person_detection
 bash scripts/m5_acceptance.sh demo_person_detection  # the whole sequence incl. supersede + rollback
 ```
 
@@ -129,7 +133,12 @@ when no SSH session is open, user lingering must be enabled once on the device:
 `loginctl enable-linger julian` (asks for the user's own password over SSH; `target setup`
 warns while `Linger=no`). Without lingering the service still works while a session exists.
 Setting `service_name: null` disables service management entirely; health then performs a
-one-shot inference on a sample.
+one-shot inference on a sample, and `service stop/start/restart` answer `TARGET_NO_SERVICE`.
+
+`service stop` leaves `~/camthink-ai/service/stopped.json` next to `status.json`; while it
+exists the device's health is reported as `SERVICE_STOPPED` (deliberate) rather than
+`UNHEALTHY`. `service start`, `deploy start` and `rollback` delete it. `service_status()`
+gathers unit state, `current`, the marker and the heartbeat in a single SSH round trip.
 
 ## Memory and GPU
 
