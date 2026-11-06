@@ -8,6 +8,9 @@
 #   aip connection-test              read-only self-test of the server, CLI, projects, devices
 #   aip upload <project> <name.zip>  receive a dataset archive on stdin into
 #                                    projects/<project>/data/uploads/<name>/ (the only write path)
+#   aip download <project> <export_id> [--base64|--info]
+#                                    send a `label export` ZIP to stdout (the only file read path;
+#                                    nothing but recorded, checksum-verified exports)
 #   aip app source set <project>     camera URL (with credentials) on stdin, e.g.
 #                                    "rtsp://u:pw@cam/stream" | ssh ai-server app source set p
 #                                    (stdin is passed through to the CLI; never put it in args)
@@ -33,7 +36,8 @@ case "${1:-}" in
   detach-status)   shift; exec "$PY" "$HERE/detach.py" status "$@" ;;
   connection-test) exec "$PY" "$HERE/connection_test.py" ;;
   upload)          shift; exec "$PY" "$HERE/upload.py" "$@" ;;
-  "")              echo "usage: aip <ai-pipeline args> | detach <args> | detach-status <handle> | connection-test | upload <project> <archive>" >&2; exit 2 ;;
+  download)        shift; exec "$PY" "$HERE/download.py" "$@" ;;
+  "")              echo "usage: aip <ai-pipeline args> | detach <args> | detach-status <handle> | connection-test | upload <project> <archive> | download <project> <export_id> [--base64|--info]" >&2; exit 2 ;;
 esac
 
 exec "$REPO/.venv/bin/ai-pipeline" -o json "$@"

@@ -55,6 +55,7 @@ ai-pipeline train start my_detector --wait      # job on the compute backend -> 
 ai-pipeline evaluate run my_detector mv-001 --wait   # metrics + acceptance -> ACCEPTED/REJECTED
 ai-pipeline model select my_detector            # best accepted by evaluation.selection
 ai-pipeline label auto my_detector --wait       # pretrained model -> new label set (kind: model)
+ai-pipeline label export my_detector <lbl-id>   # review ZIP (YOLO labels + manifest) for X-AnyLabeling
 ai-pipeline export start my_detector --wait     # export job -> exp-001 (ONNX)
 ai-pipeline target setup my_detector            # install the edge runtime + user service on the device
 ai-pipeline deploy start my_detector            # stage/TensorRT build/smoke/benchmark/policy/activate/health

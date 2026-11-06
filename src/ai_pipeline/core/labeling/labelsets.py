@@ -116,8 +116,12 @@ def import_labels(
     fmt: str,
     class_names: list[str] | None = None,
     import_ids: list[str] | None = None,
+    parent_label_set_id: str | None = None,
 ) -> dict[str, Any]:
-    """Convert label files under ``root`` to a canonical label set (``source.kind='imported'``)."""
+    """Convert label files under ``root`` to a canonical label set (``source.kind='imported'``).
+    ``parent_label_set_id`` records the set these labels were reviewed from (lineage only)."""
+    if parent_label_set_id:
+        project.store.read("labels", parent_label_set_id)  # raises LABEL_NOT_FOUND
     if not root.exists():
         raise OperationError(
             f"Label source does not exist: {root}",
@@ -164,6 +168,7 @@ def import_labels(
             {"file": p.file, "line": p.line, "message": p.message} for p in parsed.parse_issues
         ],
         unmatched_label_files=parsed.unmatched_files,
+        parent_label_set_id=parent_label_set_id,
     )
     log.bind(project=project.name, operation="label.import").info(
         "label set %s: %d annotations, %d parse issues, %d unmatched files",

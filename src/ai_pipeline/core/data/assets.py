@@ -48,7 +48,13 @@ class AssetInfo(BaseModel):
 
     @property
     def stems(self) -> set[str]:
-        return {Path(n).stem for n in self.original_filenames}
+        return {Path(original_basename(n)).stem for n in self.original_filenames}
+
+
+def original_basename(name: str) -> str:
+    """File name without directories. Archives made on Windows can carry ``\\`` separators
+    that were recorded verbatim as part of the original filename."""
+    return name.replace("\\", "/").rsplit("/", 1)[-1]
 
 
 def sha256_file(path: Path) -> str:

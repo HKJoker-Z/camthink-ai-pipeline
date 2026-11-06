@@ -12,7 +12,7 @@ is what a human configures once. Everything below maps onto the existing CLI
 | | |
 |---|---|
 | Name | `camthink-ai-pipeline-operator` |
-| Use when | the user asks to create or configure a detection project, upload/import data/labels, build a dataset, train, evaluate, select, export, deploy to an edge device, check what runs on a device, stop/start/restart the edge application, connect an RTSP camera, start/stop live monitoring, get the live-view webpage URL, read detection FPS / latency / device load, change the confidence threshold, roll back, or report pipeline state |
+| Use when | the user asks to create or configure a detection project, upload/import data/labels, export auto-labels for human review and download them to Windows, build a dataset, train, evaluate, select, export, deploy to an edge device, check what runs on a device, stop/start/restart the edge application, connect an RTSP camera, start/stop live monitoring, get the live-view webpage URL, read detection FPS / latency / device load, change the confidence threshold, roll back, or report pipeline state |
 | Tool needed | one shell/SSH tool that runs `ssh ai-server <args>` and returns stdout, stderr and the exit code; for dataset upload and for camera URLs the same tool must be able to feed data to the command's stdin (sections 7.0 and 7.5) |
 | Scope | V1: YOLO object detection (`task_type: object_detection`), targets `ng4511-lab` (NG4511) and other configured targets; no face recognition, no new task types |
 | Hard rules | always JSON; decide from `status`/`error.code`/exit code, never from log text; one active deployment per device; the device's `target status` beats any project pointer; camera URLs with passwords go to stdin only and are never repeated back; a live-view URL is only "working" when the envelope says `url_verified: true`; ask a human before anything in section 6 |
@@ -109,8 +109,9 @@ Every command is `ssh ai-server <command>` (forced key) and returns the JSON env
 | overview | `status <p>` | pointers, counts, model/deployment states, `next_operations` |
 | project | `project list` · `project create <p> [--task object_detection] [--template default] [config options…]` · `project configure <p> <config options…>` · `project show <p>` · `project validate <p>` | name `^[a-z][a-z0-9_]*$`; create scaffolds `projects/<p>/project.yaml` and applies the options (section 7.1); configure edits an existing file with full validation; show dumps the validated config |
 | upload (wrapper only) | `upload <p> <name>.zip  < local-archive` | the only write path of the forced key: unpacks into `projects/<p>/data/uploads/<name>/` and returns the folders to import (section 7.0) |
+| download (wrapper only) | `download <p> <lex-id> > file.zip` · `download <p> <lex-id> --base64` · `download <p> <lex-id> --info` | the only file read path: sends an archive created by `label export`, nothing else; size and SHA-256 are re-checked first. stdout = the file only (status JSON on stderr); `--info` = JSON with `bytes`/`sha256`, no file (section 7.6) |
 | data | `data import <p> [<dir-or-file>] [--no-recursive]` · `data list <p>` | default source: `dataset.sources` in `project.yaml`; paths are on the AI server |
-| labels | `label import <p> <dir> [--format yolo] [--classes-file f] [--import id]…` · `label auto <p> [--import id]… [--weights w] [--confidence c] [--backend b] [--wait] [--timeout s]` · `label list <p>` | `label auto` is a run (section 4) |
+| labels | `label import <p> <dir> [--format yolo] [--classes-file f] [--import id]… [--parent lbl]` · `label auto <p> [--import id]… [--weights w] [--confidence c] [--backend b] [--wait] [--timeout s]` · `label list <p>` · `label export <p> <lbl> [--format yolo] [--include-images]` · `label exports <p>` | `label auto` is a run (section 4); `label export` writes a review ZIP (labels + `classes.txt` + `manifest.json`, images only with `--include-images`) and returns `export_id`, `bytes`, `sha256`; `--parent` records which set a reviewed set was corrected from (section 7.6) |
 | dataset | `dataset validate <p> [--labels id] [--import id]… [--verify-assets]` · `dataset build <p> [--labels id] [--import id]…` · `dataset list <p>` · `dataset show <p> <ds-vNNN> [--manifest]` | validate writes nothing; build is idempotent (`created: false`) |
 | train | `train start <p> [--dataset ds] [--candidate c] [--backend b] [--wait] [--timeout s]` · `train status <p> <run> [--wait] [--timeout s] [--tail N]` · `train list <p>` | new run id every time; completion auto-registers `mv-NNN` |
 | runs | `run status <p> <run> [--wait] [--timeout s] [--tail N]` · `run list <p> [--kind train\|evaluate\|autolabel\|export] [--no-sync]` · `run logs <p> <run> [--tail N]` · `run cancel <p> <run>` | works for every run kind |
@@ -125,7 +126,7 @@ Every command is `ssh ai-server <command>` (forced key) and returns the JSON env
 | live view | `app liveview start <p>` · `app liveview stop <p>` · `app liveview restart <p>` · `app liveview url <p>` · `app liveview status <p>` (alias of `app status`) | the webpage process only: stop leaves detection running, start never rebuilds/redeploys/restarts inference; start/restart verify the URL from the AI server (`url_check.verified`) |
 | monitoring | `app status <p>` · `app metrics <p>` | status = ownership, inference state/mode, camera connectivity (per channel: connected, decode fps, reconnects, error), live-view state + URL, masked config, pending restarts; metrics = detection FPS, input FPS, inference/e2e latency p50/p95, CPU, GPU, RAM, temperatures, power, skipped frames, last inference age, viewers — `null` = unavailable (never estimated); both refuse to show another project's device (`DEVICE_OCCUPIED` / `ownership.matches: false`) |
 | recovery | `rollback <p> [--to dep]` · `health <p> [--target t]` | rollback = approval; health is read-only |
-| helpers (wrapper only) | `connection-test` · `detach <command…>` · `detach-status <handle>` · `upload <p> <archive>` | sections 1.4, 4.2 and 7.0 |
+| helpers (wrapper only) | `connection-test` · `detach <command…>` · `detach-status <handle>` · `upload <p> <archive>` · `download <p> <lex-id>` | sections 1.4, 4.2, 7.0 and 7.6 |
 
 Global flags accepted before the command: `-v`/`-vv` (more logs on stderr), `--infra`,
 `--projects-root`, `--artifact-root`. There is no `--yes`, `--force`, `--skip-benchmark`,
@@ -643,6 +644,121 @@ you have measured on that device.
 
 ---
 
+### 7.6 Reviewing auto-labels on the Windows PC (X-AnyLabeling)
+
+Auto-labels are **proposals**. They become training data only after a human has reviewed every
+frame and the corrected labels have been imported as a new label set. Never build a dataset or
+train from a `kind: model` label set when the user asked for a review.
+
+Commands below use `ai-server-grok`, the SSH alias of the forced key on the Windows 11 PC
+(elsewhere `ai-server`, section 1.1). They run in Windows PowerShell 5.1. `<review>` is the
+folder the user names for the review: it already holds `images\` with the original frames, e.g.
+`D:\rat_detection_review` with `images\cam0_20261106_143807_t0001s.jpg`.
+
+**1. Export the label set** (read-only on the server, no approval):
+
+```
+ssh ai-server-grok label export rat_detection lbl-20261106-075701-fa49 --format yolo
+```
+
+Take `result.export_id` (`lex-…`), `result.bytes`, `result.sha256` and `result.counts` (`frames`,
+`frames_with_boxes`, `frames_without_boxes`, `boxes`) from the envelope. `label exports <p>`
+lists earlier exports. Add `--include-images` only when the user has no copy of the frames.
+
+**2. Download to the Windows PC.** Windows PowerShell 5.1 re-encodes binary output that is
+redirected with `>`, which corrupts a ZIP. Use either route:
+
+```powershell
+$Review = "D:\rat_detection_review"; $Export = "lex-20261106-081801-025f"
+$Zip = Join-Path $Review "rat_detection_review_$Export.zip"
+
+# a) raw bytes through cmd.exe (path without spaces)
+cmd /c "ssh ai-server-grok download rat_detection $Export > $Zip"
+
+# b) text-safe, any path (keeps the whole file in memory; fine for label-only exports)
+$b64 = (ssh ai-server-grok download rat_detection $Export --base64) -join ""
+[IO.File]::WriteAllBytes($Zip, [Convert]::FromBase64String($b64))
+```
+
+Verify before using it. Both must print `True`, otherwise delete the file and download again:
+
+```powershell
+$info = ((ssh ai-server-grok download rat_detection $Export --info) -join "`n" | ConvertFrom-Json).result
+(Get-Item $Zip).Length -eq $info.bytes
+(Get-FileHash $Zip -Algorithm SHA256).Hash.ToLower() -eq $info.sha256
+```
+
+**3. Place the files next to the images without overwriting anything.** The proposals go to
+`<review>\labels`. If that folder already exists it may hold the user's own corrections: stop
+and ask; never overwrite it.
+
+```powershell
+$Stage = Join-Path $Review "_export_$Export"
+Expand-Archive -Path $Zip -DestinationPath $Stage
+$Pkg = Join-Path $Stage "rat_detection_review"
+if (Test-Path (Join-Path $Review "labels")) { throw "labels\ already exists in $Review - ask the user" }
+Copy-Item (Join-Path $Pkg "labels") $Review -Recurse
+Copy-Item (Join-Path $Pkg "classes.txt"), (Join-Path $Pkg "manifest.json") $Review
+# every image needs exactly one label file with the same name: no output = OK
+Compare-Object (Get-ChildItem "$Review\images" -File).BaseName (Get-ChildItem "$Review\labels" -Filter *.txt).BaseName
+```
+
+Result: `images\`, `labels\` (one `.txt` per frame, empty = no rodent proposed), `classes.txt`
+(`rodent` = class 0) and `manifest.json` in `<review>`. Report to the user how many frames
+have proposals and how many are empty (from `result.counts`).
+
+**4. Review in X-AnyLabeling** (the user does this; the bot only explains it):
+
+1. *File → Open Dir* → `<review>\images`.
+2. *Upload → YOLO (Hbb) annotations*: pick `<review>\classes.txt`, then `<review>\labels`. The
+   proposed boxes appear on the frames.
+3. Go through **every** frame, including the empty ones: delete false positives, draw missed
+   rodents, fix loose boxes. An empty frame that really has no rodent stays empty — it is a
+   negative example.
+4. *Export → YOLO (Hbb) annotations*, classes file `<review>\classes.txt`, output folder
+   **`<review>\labels_reviewed`** (a new folder, so the proposals stay as they were).
+
+Menu names differ slightly between X-AnyLabeling versions. `manifest.json` lists each box's
+model `confidence` (box N = line N of the frame's `.txt`) if the user wants to check
+low-confidence proposals first.
+
+**5. Upload the reviewed labels** (section 7.0; a new upload name each round):
+
+```powershell
+Compress-Archive -Path "$Review\labels_reviewed", "$Review\classes.txt" -DestinationPath "$Review\rat_reviewed_01.zip"
+cmd /c "ssh ai-server-grok upload rat_detection rat_reviewed_01.zip < $Review\rat_reviewed_01.zip"
+```
+
+**6. Import them as a new label set** with the same import scope as the auto-label set
+(`manifest.json` → `label_set.scope_import_ids`) and the auto-label set as parent:
+
+```
+ssh ai-server-grok label import rat_detection <result.label_root> --format yolo --classes-file <result.class_name_files[0]> --import imp-20261106-075611-048f --parent lbl-20261106-075701-fa49
+```
+
+Check the envelope: `counts.unmatched_label_files` and `counts.parse_issues` must be 0, and
+`assets_with_annotations + assets_without_annotations` must equal the export's `frames`. A frame
+without a label file is treated as a negative, exactly like an empty file.
+
+**7. Validate, then build** with the reviewed set:
+
+```
+ssh ai-server-grok dataset validate rat_detection --labels <reviewed lbl> --import imp-20261106-075611-048f
+ssh ai-server-grok dataset build rat_detection --labels <reviewed lbl> --import imp-20261106-075611-048f
+```
+
+`TOO_MANY_EMPTY_IMAGES` means more empty frames than `dataset.validation.max_empty_label_ratio`
+allows. Report it; whether to relax the threshold or add frames with rodents is the user's
+decision.
+
+**8. Train only after step 7 produced a `ds-vNNN` from the reviewed label set** (section 7.2).
+
+Video-derived frames: adjacent frames of one clip are near-duplicates, and the dataset split is
+per image, so the same scene can end up in training and validation and inflate the metrics.
+`manifest.json` → `sequences` (and each frame's `sequence.group`) identifies the clips — for
+`rat_detection`, 12 five-minute clips named `cam0_20261106_HHMMSS`. Tell the user, and suggest
+keeping whole clips for evaluation as a separate upload/import.
+
 ## 8. Tested on 2026-11-05 (AI server, project `v1_person`, through `scripts/grok_bot/aip`)
 
 | Step | Result |
@@ -714,6 +830,13 @@ including the new `tests/unit/test_cli_m7.py`, NG4511 service-control simulation
 | `project configure` exit 2 `NO_CHANGES` | no option given |
 | `upload` exit 3 `PROJECT_NOT_FOUND` | run `project create` first |
 | `upload` `ARCHIVE_INVALID` / `EMPTY_UPLOAD` / `NO_STDIN` | the archive was not piped into stdin (PowerShell: use `cmd /c "… < file"`), or it contains `..`/absolute members |
+| `label export` exit 2 `LABEL_SET_ID_INVALID` / exit 3 `LABEL_NOT_FOUND` | take the id from `label list <p>` or the `label auto` envelope (`result.label_set.label_set_id`); never type it from memory |
+| `label export` exit 1 `AMBIGUOUS_STEMS` | two frames share a file name (other folder, or only upper/lower case differs); export a label set scoped to one import |
+| `label export` exit 1 `LABEL_CLASS_UNKNOWN` | the label set uses a class that is not in `dataset.classes`; report `error.details`, do not edit classes without the user |
+| `download` `EXPORT_ID_INVALID` / `LABEL_EXPORT_NOT_FOUND` | the second argument must be a `lex-…` id from `label export` / `label exports <p>` — not a label-set id or a path |
+| `download` `EXPORT_INTEGRITY_FAILED` / `EXPORT_PATH_INVALID` | the archive on the server no longer matches its record; nothing was sent. Run `label export` again and report it |
+| downloaded ZIP size / SHA-256 differ from `--info` | the transfer altered bytes (Windows PowerShell 5.1 `>` re-encodes binary output). Download again with `cmd /c "… > file"` or the `--base64` route (section 7.6) |
+| `dataset validate` `TOO_MANY_EMPTY_IMAGES` after a review import | more empty frames than `dataset.validation.max_empty_label_ratio` allows. Report the ratio; changing the threshold is the user's decision (`project configure <p> --set dataset.validation.max_empty_label_ratio=<x>`) |
 | `service *` exit 3 `DEVICE_OCCUPIED` | another project is live on the device; report `error.details.current_project` and ask about `--switch` |
 | `service start` exit 1 `SERVICE_START_FAILED` | the service came up but no healthy heartbeat / `current` changed underneath; run `target status --target <t>`, report, do not retry in a loop |
 | `health` exit 1 `SERVICE_STOPPED` | expected after `service stop`; `service start <p>` resumes |
@@ -753,6 +876,23 @@ number below.
 | D — overhead (tegrastats, 20 s means; 6 cores, 25 W mode) | baseline (production `v1_person` + `camthink-live`): CPU 21.1 %, RAM 4033 MB, 6.07 W · + M9 inference at 10 fps RTSP, live-view server up, no viewer: CPU 25.6 %, RAM 4360 MB, 6.65 W · + one MJPEG viewer: CPU 28.5 %, 6.72 W. Per process (`top`, 10 s): inference service 26 % of one core without viewer, 40 % with one viewer at 6 fps display (JPEG encode 17 ms p50 per 720p frame on CPU); live-view server 0–0.7 %; RSS 435 MB / 78 MB. Detection FPS and inference latency were unchanged by the viewer (9.86 fps, 21 ms p50). GPU % from tegrastats is dominated by the unrelated PyTorch demo (max 99 % in every condition, incl. baseline) and is reported, not interpreted |
 | unit tests | `ruff check`, `ruff format --check`, `pytest -m "not slow and not hardware"`: 232 passed |
 
+### 8.4 Label export acceptance (2026-11-06, AI server, project `rat_detection`)
+
+Existing data only; no auto-labeling, training or deployment was run, and the label set was not
+modified (SHA-256 of its record and `annotations.jsonl` identical before and after).
+
+| Check | Result |
+|---|---|
+| `label export rat_detection lbl-20261106-075701-fa49 --format yolo` | `lex-20261106-081801-025f`, 0.3 s, 208,921 bytes, SHA-256 `95bf6592…cb54c5e`; 735 members under one folder `rat_detection_review/` (732 label files, `classes.txt` = `rodent`, `manifest.json`, `README.txt`), CRC check clean |
+| frames | 732 in the manifest = 732 images of import `imp-20261106-075611-048f`; every image name equals the frame name of the Windows upload (`cam0_20261106_143807_t0001s.jpg`, …), every label file the same stem `.txt` |
+| boxes | 370 lines on 286 frames, all class id `0`, 5 fields, values in [0, 1], max deviation from the stored boxes 5·10⁻⁷ (6-decimal rounding); 0 clamped, 0 skipped; 370/370 confidences copied |
+| empty frames | 446 empty `.txt` files, `boxes: []` in the manifest |
+| metadata | `auto_label.model_version` `mv-005` (from the weights' training run), confidence threshold 0.25; `timestamp` `null` on all frames (the extracted JPEGs carry no EXIF); `sequences`: 12 clips (`cam0_20261106_143807` … `_153305`, 33–107 frames each) with per-frame `offset_s` from the file names |
+| restricted download, real `sshd` | a temporary key with the same `restrict,command=".../aip"` line as the Grok key, against `localhost`: `download` (raw) and `--base64` both reproduced SHA-256 `95bf6592…`; `cat /etc/passwd` reached the CLI only ("No such command"); `download rat_detection ../../etc/passwd` → `EXPORT_ID_INVALID`; the export id under another project → `LABEL_EXPORT_NOT_FOUND`. The temporary key was removed and `authorized_keys` restored byte-identical |
+| return trip (copy of the project in a temp workspace) | proposals edited (one box removed) and re-zipped with `\` separators as Windows PowerShell 5.1 writes them → `upload` produced `labels/` (732 files) + `classes.txt` → `label import … --import imp-20261106-075611-048f --parent lbl-20261106-075701-fa49`: 369 annotations, 0 unmatched, 0 parse issues, lineage recorded. Before this change the same upload would have produced files literally named `images\…` and no label file would have matched |
+| validation of that reviewed set | `TOO_MANY_EMPTY_IMAGES`: 446/732 empty > `max_empty_label_ratio 0.5` — expected for these proposals; the real review decides |
+| not tested here | the Windows side (PowerShell commands, X-AnyLabeling import/export) — no access to the PC from this session; the archive layout, names and line format were checked on the server |
+
 ## 9. Known limitations (V1)
 
 - One active deployment per device; cross-project supersede is visible through `target status`
@@ -763,7 +903,8 @@ number below.
   restart` are quick (seconds) and run inline.
 - Real training runs report no `progress` fields; epoch progress is log-only.
 - The forced-command key's only write path is `upload` (archives into
-  `projects/<p>/data/uploads/`); deletions and `infrastructure.yaml` edits remain human steps.
+  `projects/<p>/data/uploads/`) and its only file read path is `download` (archives created by
+  `label export`); deletions and `infrastructure.yaml` edits remain human steps.
   Paths given to `data import`, `label import`, `deploy infer` are paths on the AI server.
 - `project configure` covers the ordinary settings (classes, sources, weights, auto-label,
   training, validation thresholds, acceptance, target/precision/confidence) and any other

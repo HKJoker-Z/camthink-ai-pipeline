@@ -148,6 +148,7 @@ def test_project_status_fresh(settings: Settings):
         for k in (
             "imports",
             "labels",
+            "label_exports",
             "datasets",
             "runs",
             "models",

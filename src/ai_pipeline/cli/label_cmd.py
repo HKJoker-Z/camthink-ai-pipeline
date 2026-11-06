@@ -32,6 +32,11 @@ def import_cmd(
     import_ids: list[str] = typer.Option(
         [], "--import", help="Restrict matching to these import ids (repeatable)."
     ),
+    parent: str | None = typer.Option(
+        None,
+        "--parent",
+        help="Label set these labels were reviewed/corrected from (recorded as lineage).",
+    ),
 ) -> None:
     """Convert external label files to the canonical annotation store as an 'imported' label set."""
 
@@ -39,7 +44,12 @@ def import_cmd(
         project = Project.load(name, cli.settings)
         names = read_class_names(classes_file) if classes_file else None
         rec = import_labels(
-            project, path.expanduser(), fmt=fmt, class_names=names, import_ids=import_ids or None
+            project,
+            path.expanduser(),
+            fmt=fmt,
+            class_names=names,
+            import_ids=import_ids or None,
+            parent_label_set_id=parent,
         )
         c = rec["counts"]
         warn = ""
@@ -58,6 +68,7 @@ def import_cmd(
                 "format": fmt,
                 "counts": c,
                 "class_names": rec["source"]["class_names"],
+                "parent_label_set_id": rec["parent_label_set_id"],
                 "parse_issues": rec["parse_issues"][:20],
                 "unmatched_label_files": rec["unmatched_label_files"][:20],
             },
@@ -157,3 +168,66 @@ def list_cmd(ctx: typer.Context, name: str = typer.Argument(..., help="Project n
         )
 
     run_command(ctx, "label.list", op, project=name)
+
+
+@app.command("export")
+def export_cmd(
+    ctx: typer.Context,
+    name: str = typer.Argument(..., help="Project name."),
+    label_set_id: str = typer.Argument(..., help="Label set id, e.g. lbl-20261106-075701-fa49."),
+    fmt: str = typer.Option("yolo", "--format", help="Label format."),
+    include_images: bool = typer.Option(
+        False,
+        "--include-images",
+        help="Also pack the images (portable package). Default: labels + metadata only.",
+    ),
+) -> None:
+    """Export a label set as a review ZIP: labels/<frame>.txt for every frame (empty = no
+    objects), classes.txt and manifest.json (asset ids, confidences, timestamps, sequences).
+    Read-only for the label store; each export is a new snapshot. Download it with the
+    Grok Bot wrapper's `download <project> <export_id>`."""
+    from ai_pipeline.core.labeling.export import export_label_set
+
+    def op(cli: CliContext) -> Envelope:
+        project = Project.load(name, cli.settings)
+        rec = export_label_set(project, label_set_id, fmt=fmt, include_images=include_images)
+        c = rec["counts"]
+        return Envelope(
+            operation="label.export",
+            project=name,
+            result={**rec, "download": f"download {name} {rec['export_id']}"},
+            next_operations=[
+                f"download {name} {rec['export_id']}",
+                f"label import {name} <reviewed labels dir> --format yolo --parent {label_set_id}",
+            ],
+            human_text=(
+                f"export {rec['export_id']} of {label_set_id}: {c['frames']} frames "
+                f"({c['frames_with_boxes']} with boxes, {c['frames_without_boxes']} empty), "
+                f"{c['boxes']} boxes\n  {rec['archive_name']}  {rec['bytes']} bytes  "
+                f"sha256 {rec['sha256']}"
+            ),
+        )
+
+    run_command(ctx, "label.export", op, project=name)
+
+
+@app.command("exports")
+def exports_cmd(ctx: typer.Context, name: str = typer.Argument(..., help="Project name.")) -> None:
+    """List label exports (id, label set, size, sha256) available for download."""
+
+    def op(cli: CliContext) -> Envelope:
+        project = Project.load(name, cli.settings)
+        rows = sorted(project.store.list("label_exports"), key=lambda r: r["created_at"])
+        text = (
+            "\n".join(
+                f"{r['export_id']}  {r['label_set_id']}  frames={r['counts']['frames']} "
+                f"boxes={r['counts']['boxes']}  {r['bytes']} bytes  sha256={r['sha256'][:12]}…"
+                for r in rows
+            )
+            or "(no label exports)"
+        )
+        return Envelope(
+            operation="label.exports", project=name, result={"exports": rows}, human_text=text
+        )
+
+    run_command(ctx, "label.exports", op, project=name)
