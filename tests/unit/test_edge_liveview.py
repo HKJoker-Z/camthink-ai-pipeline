@@ -10,6 +10,7 @@ import socket
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -105,15 +106,44 @@ def test_overlay_draws_and_encodes():
 # -- end to end: monitor + liveview on a clip ------------------------------------------------------
 
 
-def _write_clip(path: Path, frames: int = 150) -> None:
-    vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 25, (320, 180))
-    assert vw.isOpened()
-    for i in range(frames):
-        f = np.zeros((180, 320, 3), np.uint8)
-        x = 10 + (i * 3) % 200
-        cv2.rectangle(f, (x, 50), (x + 60, 120), (0, 200, 255), -1)
-        vw.write(f)
-    vw.release()
+CLIP_W, CLIP_H, CLIP_FPS = 320, 180, 25
+# Encoders to try, most portable first. Which ones exist depends on the OpenCV build (pip
+# wheels bundle FFmpeg; distro builds may not), so the clip is verified by reading it back.
+CLIP_CODECS = (("MJPG", ".avi"), ("mp4v", ".mp4"), ("XVID", ".avi"), ("MJPG", ".mkv"))
+
+
+def _clip_frame(i: int) -> np.ndarray:
+    f = np.zeros((CLIP_H, CLIP_W, 3), np.uint8)
+    x = 10 + (i * 3) % 200
+    cv2.rectangle(f, (x, 50), (x + 60, 120), (0, 200, 255), -1)
+    return f
+
+
+def _write_clip(directory: Path, frames: int = 150) -> Path:
+    """Deterministic synthetic clip (moving orange square the FakeDetector finds). Returns
+    the path of the first encoding this OpenCV build can both write and read back."""
+    attempts = []
+    for fourcc, ext in CLIP_CODECS:
+        path = directory / f"clip{ext}"
+        vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*fourcc), CLIP_FPS, (CLIP_W, CLIP_H))
+        if not vw.isOpened():
+            attempts.append(f"{fourcc}{ext}: writer not opened")
+            continue
+        for i in range(frames):
+            vw.write(_clip_frame(i))
+        vw.release()
+        cap = cv2.VideoCapture(str(path), cv2.CAP_FFMPEG)
+        ok, frame = cap.read() if cap.isOpened() else (False, None)
+        n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.isOpened() else 0
+        cap.release()
+        if ok and frame is not None and frame.shape[:2] == (CLIP_H, CLIP_W) and n >= frames // 2:
+            return path
+        attempts.append(f"{fourcc}{ext}: read back ok={ok} frames={n} size={path.stat().st_size}")
+        path.unlink(missing_ok=True)
+    raise AssertionError(
+        "no usable video encoder in this OpenCV build "
+        f"({cv2.__version__}); tried: {'; '.join(attempts)}"
+    )
 
 
 class FakeDetector:
@@ -170,7 +200,7 @@ def device_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     dep = root / "deployments" / "demo-dep-001"
     dep.mkdir(parents=True)
     (root / "service").mkdir()
-    _write_clip(root / "clip.mp4")
+    _write_clip(root)
     (dep / "runtime.json").write_text(
         json.dumps(
             {
@@ -193,12 +223,15 @@ def device_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
+def _clip(root: Path) -> Path:
+    return next(p for p in root.iterdir() if p.name.startswith("clip"))
+
+
 def test_frame_source_reads_file_and_reports_stats(device_root: Path):
     from camthink_edge import stream
 
-    src = stream.FrameSource(
-        str(device_root / "clip.mp4"), 320, 180, name="t", backend="cv2", loop=True
-    )
+    clip = _clip(device_root)
+    src = stream.FrameSource(str(clip), 320, 180, name="t", backend="cv2", loop=True)
     src.start()
     try:
         deadline = time.time() + 10
@@ -214,9 +247,7 @@ def test_frame_source_reads_file_and_reports_stats(device_root: Path):
     assert src.stats()["connected"] is False
     bad = stream.probe("/nonexistent/clip.mp4", width=320, height=180, backend="cv2", seconds=1)
     assert bad["ok"] is False and bad["frames"] == 0 and bad["error"]
-    good = stream.probe(
-        str(device_root / "clip.mp4"), width=320, height=180, backend="cv2", seconds=1
-    )
+    good = stream.probe(str(clip), width=320, height=180, backend="cv2", seconds=1)
     assert good["ok"] is True and good["frames"] > 5 and good["native_size"] == [320, 180]
     assert stream.is_rtsp(RTSP) and not stream.is_rtsp("/x.mp4")
     assert stream.pick_backend("cv2") == "cv2"
@@ -229,59 +260,168 @@ def _get(port: int, path: str, *, binary: bool = False):
     return data if binary else json.loads(data)
 
 
-def _wait(pred, timeout: float = 15.0, step: float = 0.1):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        v = pred()
-        if v:
-            return v
-        time.sleep(step)
-    raise AssertionError("condition not met in time")
+class Service:
+    """Runs `run_monitor` / `run_liveview` in a thread, keeps its exception, stops it on exit."""
+
+    def __init__(self, name: str, target, **kwargs):
+        self.name = name
+        self.stop = threading.Event()
+        self.error: BaseException | None = None
+        self.result = None
+
+        def body():
+            try:
+                self.result = target(stop=self.stop, **kwargs)
+            except BaseException as exc:  # noqa: BLE001 - surfaced by Harness.check()
+                self.error = exc
+
+        self.thread = threading.Thread(target=body, name=name, daemon=True)
+
+    def start(self) -> Service:
+        self.thread.start()
+        return self
+
+    def shutdown(self, timeout: float = 15.0) -> None:
+        self.stop.set()
+        self.thread.join(timeout)
+
+    def describe(self) -> str:
+        state = "alive" if self.thread.is_alive() else f"exited (result={self.result!r})"
+        return f"{self.name}: {state}" + (f" error={self.error!r}" if self.error else "")
+
+
+class Harness:
+    """Monitor + live-view services on a device root, with diagnostics for every wait."""
+
+    def __init__(self, root: Path, port: int, *, heartbeat_s: float = 0.5):
+        from camthink_edge import liveview, monitor
+
+        self.root, self.port = root, port
+        self.live = appcfg.live_dir(root)
+        self.services = [
+            Service(
+                "monitor",
+                monitor.run_monitor,
+                root=root,
+                cfg=appcfg.load(root),
+                heartbeat_s=heartbeat_s,
+            ),
+            Service("liveview", liveview.run_liveview, root=root),
+        ]
+
+    def __enter__(self) -> Harness:
+        for svc in self.services:
+            svc.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        for svc in self.services:
+            svc.shutdown()
+        for svc in self.services:
+            assert not svc.thread.is_alive(), f"{svc.name} did not stop: {svc.describe()}"
+            assert svc.error is None, f"{svc.name} crashed: {svc.error!r}"
+
+    def check(self) -> None:
+        """Fail immediately (instead of waiting for a timeout) when a service died."""
+        for svc in self.services:
+            if svc.error is not None or not svc.thread.is_alive():
+                raise AssertionError(f"service stopped unexpectedly: {self.diagnostics()}")
+
+    def _read(self, path: Path) -> str:
+        try:
+            return path.read_text()[:1500]
+        except OSError as exc:
+            return f"<{exc.__class__.__name__}>"
+
+    def diagnostics(self) -> str:
+        lines = [svc.describe() for svc in self.services]
+        lines.append(f"live dir {self.live}: {sorted(p.name for p in self.live.glob('*'))}")
+        lines.append("status.json: " + self._read(self.root / "service" / "status.json"))
+        lines.append("stats.json: " + self._read(self.live / "stats.json"))
+        try:
+            lines.append("/api/status: " + json.dumps(self.get("/api/status"))[:1500])
+        except Exception as exc:  # noqa: BLE001 - diagnostics only
+            lines.append(f"/api/status: <{exc!r}>")
+        return "\n".join(lines)
+
+    def get(self, path: str, *, binary: bool = False):
+        return _get(self.port, path, binary=binary)
+
+    def wait(self, what: str, pred, timeout: float = 20.0, step: float = 0.1):
+        """Poll `pred` (exceptions count as "not yet") until truthy; rich failure message."""
+        deadline = time.time() + timeout
+        last: object = None
+        while time.time() < deadline:
+            self.check()
+            try:
+                last = pred()
+            except (urllib.error.URLError, OSError, KeyError, IndexError, TypeError) as exc:
+                last = exc
+            else:
+                if last:
+                    return last
+            time.sleep(step)
+        raise AssertionError(
+            f"timed out after {timeout}s waiting for {what}\nlast value: {last!r}\n"
+            + self.diagnostics()
+        )
+
+    def status(self):
+        return self.get("/api/status")
+
+    def heartbeat(self) -> dict:
+        return json.loads((self.root / "service" / "status.json").read_text())
+
+    def mjpeg_parts(self, ch: int = 0, *, parts: int = 5, timeout: float = 10.0) -> bytes:
+        sk = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sk.sendall(f"GET /stream.mjpg?ch={ch} HTTP/1.1\r\nHost: x\r\n\r\n".encode())
+            buf = b""
+            deadline = time.time() + timeout
+            while buf.count(b"--frame") < parts and time.time() < deadline:
+                self.check()
+                chunk = sk.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+        finally:
+            sk.close()
+        assert buf.count(b"--frame") >= parts, (
+            f"only {buf.count(b'--frame')} MJPEG parts in {timeout}s\n" + self.diagnostics()
+        )
+        return buf
 
 
 def test_monitor_and_liveview_end_to_end(device_root: Path):
-    from camthink_edge import liveview, monitor
-
     root = device_root
+    clip = _clip(root)
     port = _free_port()
     appcfg.save(
         root,
         appcfg.merge_defaults(
             {
-                "sources": [{"name": "cam0", "url": str(root / "clip.mp4")}],
+                "sources": [{"name": "cam0", "url": str(clip)}],
                 "inference": {"fps": 10, "width": 320, "height": 180, "backend": "cv2"},
                 "liveview": {"port": port, "bind": "127.0.0.1", "display_fps": 8},
                 "device": {"name": "fake-lab", "label": "Test box"},
             }
         ),
     )
-    stop_m, stop_l = threading.Event(), threading.Event()
-    tm = threading.Thread(
-        target=lambda: monitor.run_monitor(root, appcfg.load(root), heartbeat_s=0.5, stop=stop_m),
-        daemon=True,
-    )
-    tl = threading.Thread(target=lambda: liveview.run_liveview(root, stop=stop_l), daemon=True)
-    tm.start()
-    tl.start()
-    try:
-        s = _wait(
+    with Harness(root, port) as h:
+        s = h.wait(
+            "inference running with a channel",
             lambda: (
-                (lambda d: d if d["inference"]["state"] == "running" and d["channels"] else None)(
-                    _get(port, "/api/status")
-                )
-                if _port_open(port)
-                else None
-            )
+                lambda d: d if d["inference"]["state"] == "running" and d["channels"] else None
+            )(h.status()),
         )
         assert s["model"]["project"] == "demo" and s["model"]["model_version"] == "mv-001"
         assert s["model"]["deployment_id"] == "dep-001" and s["model"]["classes"] == ["cat", "dog"]
         assert s["model"]["confidence"] == 0.25 and s["device"]["name"] == "fake-lab"
         assert s["inference"]["mode"] == "rtsp"
-        assert s["config"]["sources"][0]["url"] == str(root / "clip.mp4")
-        ch = _wait(
-            lambda: (lambda c: c if c["frames"] >= 5 else None)(
-                _get(port, "/api/status")["channels"][0]
-            )
+        assert s["config"]["sources"][0]["url"] == str(clip)
+        ch = h.wait(
+            "5 inferred frames",
+            lambda: (lambda c: c if c["frames"] >= 5 else None)(h.status()["channels"][0]),
         )
         assert ch["source"]["connected"] is True and ch["source"]["backend"] == "cv2"
         assert ch["target_fps"] == 10.0 and ch["detections_by_class"] == {"cat": 1}
@@ -290,69 +430,90 @@ def test_monitor_and_liveview_end_to_end(device_root: Path):
         assert s["monitor"]["live"]["published_frames"] == 0
 
         # health + stats + detections endpoints
-        assert _get(port, "/healthz")["ok"] is True
-        st = _get(port, "/stats.json")  # same document as /api/status
+        assert h.get("/healthz")["ok"] is True
+        # /stats.json is the same document as /api/status; the system sampler publishes its
+        # first /proc sample one interval (1 s) after start, so wait for it rather than
+        # asserting on whichever stats.json write happens to be current.
+        st = h.wait(
+            "system sample with cpu_pct in /stats.json",
+            lambda: (lambda d: d if "cpu_pct" in (d["system"] or {}) else None)(
+                h.get("/stats.json")
+            ),
+        )
         assert st["inference"]["state"] == "running" and st["monitor"]["camera_connected"] is True
-        assert st["system"] is not None and "cpu_pct" in st["system"]
-        dets = _get(port, "/api/detections?ch=0")["detections"]
-        assert dets and dets[0]["class_name"] == "cat"
+        assert st["system"]["ram_total_mb"] > 0 and st["system_backend"] in (
+            "proc",
+            "jtop",
+            "tegrastats",
+        )
+        # detection metadata is published (2 Hz) even without a viewer
+        dets = h.wait("detections metadata", lambda: h.get("/api/detections?ch=0")["detections"])
+        assert dets[0]["class_name"] == "cat"
 
         # snapshot => the viewers marker is nudged, publishing starts
-        snap = _get(port, "/snapshot.jpg?ch=0", binary=True)
+        snap = h.get("/snapshot.jpg?ch=0", binary=True)
         assert snap[:2] == b"\xff\xd8"
         # MJPEG stream delivers several parts quickly, capped by display_fps
-        sk = socket.create_connection(("127.0.0.1", port), timeout=5)
-        sk.sendall(b"GET /stream.mjpg?ch=0 HTTP/1.1\r\nHost: x\r\n\r\n")
-        buf = b""
-        t0 = time.time()
-        while buf.count(b"--frame") < 5 and time.time() - t0 < 10:
-            buf += sk.recv(65536)
-        sk.close()
-        assert buf.count(b"--frame") >= 5
+        buf = h.mjpeg_parts(0, parts=5)
         assert b"Content-Type: image/jpeg" in buf
-        live = _wait(
+        live = h.wait(
+            "published frames in stats",
             lambda: (lambda d: d if d["published_frames"] > 0 else None)(
-                _get(port, "/api/status")["monitor"]["live"]
-            )
+                h.status()["monitor"]["live"]
+            ),
         )
         assert live["encode_ms_p50"] is not None
-        assert "S3cret" not in _get(port, "/", binary=True).decode()  # page has no credentials
-        assert b"CamThink" in _get(port, "/", binary=True)
+        page = h.get("/", binary=True)
+        assert b"S3cret" not in page and b"CamThink" in page  # page has no credentials
 
         # heartbeat for the pipeline's health/status machinery
-        hb = json.loads((root / "service" / "status.json").read_text())
+        hb = h.wait(
+            "heartbeat with camera connected",
+            lambda: (lambda d: d if d["camera_connected"] else None)(h.heartbeat()),
+        )
         assert hb["mode"] == "rtsp" and hb["deployment"] == "demo-dep-001"
-        assert hb["state"] == "running" and hb["camera_connected"] is True
-        assert hb["source"] == [str(root / "clip.mp4")]
+        assert hb["state"] == "running" and hb["source"] == [str(clip)]
 
         # hot reload: confidence + fps apply without restart; width needs one
         cfg = appcfg.load(root)
         cfg["inference"]["confidence"] = 0.95  # above the fake detector's 0.9 => no detections
         cfg["inference"]["fps"] = 3
         appcfg.save(root, cfg)
-        s = _wait(
-            lambda: (lambda d: d if d["model"]["confidence"] == 0.95 else None)(
-                _get(port, "/api/status")
-            )
+        s = h.wait(
+            "confidence 0.95 hot-reloaded",
+            lambda: (lambda d: d if d["model"]["confidence"] == 0.95 else None)(h.status()),
         )
         assert s["channels"][0]["target_fps"] == 3.0
         assert s["monitor"]["config_restart_required"] == {"inference": False, "liveview": False}
-        _wait(lambda: _get(port, "/api/detections?ch=0")["detections"] == [])
+        assert s["inference"]["config_restart_required"] is False
+        h.wait("no detections at 0.95", lambda: h.get("/api/detections?ch=0")["detections"] == [])
+
         cfg["inference"]["width"] = 640
         appcfg.save(root, cfg)
-        s = _wait(
-            lambda: (lambda d: d if d["monitor"]["config_restart_required"]["inference"] else None)(
-                _get(port, "/api/status")
-            )
+        # Both documents the pipeline reads must agree: stats.json (live view) and the
+        # heartbeat status.json (health / target status) are flushed together on reload.
+        s = h.wait(
+            "restart_required in stats.json and the heartbeat",
+            lambda: (
+                lambda d: (
+                    d
+                    if d["monitor"]["config_restart_required"]["inference"]
+                    and d["inference"]["config_restart_required"]
+                    else None
+                )
+            )(h.status()),
         )
-        assert s["inference"]["config_restart_required"] is True
-    finally:
-        stop_m.set()
-        stop_l.set()
-        tm.join(10)
-        tl.join(10)
-    hb = json.loads((root / "service" / "status.json").read_text())
+        assert s["monitor"]["config_restart_required"] == {"inference": True, "liveview": False}
+        assert h.heartbeat()["config_restart_required"] is True
+        # ... and the live view never shows the pending restart before the heartbeat does
+        assert not (
+            s["monitor"]["config_restart_required"]["inference"]
+            and not s["inference"]["config_restart_required"]
+        )
+    hb = h.heartbeat()
     assert hb["state"] == "stopped"
+    stats = json.loads((appcfg.live_dir(root) / "stats.json").read_text())
+    assert stats["state"] == "stopped"
 
 
 def _port_open(port: int) -> bool:
@@ -377,11 +538,13 @@ def test_liveview_without_inference_shows_reason(device_root: Path):
             }
         ),
     )
-    stop = threading.Event()
-    t = threading.Thread(target=lambda: liveview.run_liveview(root, stop=stop), daemon=True)
-    t.start()
+    svc = Service("liveview", liveview.run_liveview, root=root).start()
     try:
-        _wait(lambda: _port_open(port))
+        deadline = time.time() + 20
+        while not _port_open(port) and time.time() < deadline:
+            assert svc.thread.is_alive(), svc.describe()
+            time.sleep(0.1)
+        assert _port_open(port), f"live view did not listen on {port}: {svc.describe()}"
         s = _get(port, "/api/status")
         assert s["inference"]["state"] in ("stopped", "unknown")
         assert s["config"]["sources"][0]["url"] == "rtsp://***@192.168.5.78:554/main"
@@ -394,5 +557,5 @@ def test_liveview_without_inference_shows_reason(device_root: Path):
         assert snap[:2] == b"\xff\xd8"  # placeholder with the reason, not an error
         assert _get(port, "/healthz")["ok"] is True
     finally:
-        stop.set()
-        t.join(10)
+        svc.shutdown()
+    assert not svc.thread.is_alive() and svc.error is None, svc.describe()
