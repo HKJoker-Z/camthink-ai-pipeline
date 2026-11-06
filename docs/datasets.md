@@ -13,6 +13,8 @@ artifacts/<p>/
   imports/<import_id>.json                   import event: sources, counts, assets, rejects
   labels/<label_set_id>.json                 label set record: source, scope, counts, issues
   labels/<label_set_id>/annotations.jsonl    canonical annotations, one per line
+  label_exports/<export_id>.json             review export record: label set, counts, bytes, sha256
+  label_exports/<export_id>/<p>_review_<label_set_id>.zip   the review package (`label export`)
   datasets/<ds_version>.json                 dataset version record (same content as below)
   datasets/<ds_version>/                     immutable materialised version
     dataset.json  manifest.jsonl  data.yaml
@@ -84,6 +86,41 @@ Conversions live in the task module (`ai_pipeline.tasks.object_detection.yolo`):
 - Label files with no matching asset are recorded as `unmatched_label_files`.
 - Assets in scope with no label file are negatives (background) — allowed, bounded by
   `max_empty_label_ratio`.
+- Matching uses the original file name only, without directories. Names recorded from archives
+  zipped on Windows (`images\frame_0001.jpg`) match `frame_0001.txt` as well.
+- `--parent <label_set_id>` records the set these labels were reviewed or corrected from
+  (`parent_label_set_id`); it changes nothing else.
+
+### Label export (review packages)
+
+`ai-pipeline label export <project> <label_set_id> [--format yolo] [--include-images]` turns a
+label set back into files a human annotation tool can open, without touching the label store:
+
+```
+<p>_review/
+  labels/<frame>.txt   one per asset in the label set's scope, named after the image's original
+                       file name; YOLO "<class_id> <cx> <cy> <w> <h>", normalised; empty = none
+  images/<frame>.jpg   only with --include-images (portable package)
+  classes.txt          dataset.classes in index order (line N = class id N)
+  manifest.json        per frame: image, label_file, asset_id, original names, import ids, size,
+                       boxes (line, class_id, class_name, confidence, bbox_xywh), timestamp,
+                       sequence; plus label-set provenance, auto-label model, counts, sequences
+  README.txt
+```
+
+- Boxes are clamped to the image (`counts.boxes_clamped`); zero-area boxes are not written and are
+  listed under `skipped_boxes`. Confidence is never put into the `.txt` files, only in the manifest.
+- `confidence` is the stored model score or `null`; `timestamp` comes from the image's EXIF
+  capture time or is `null` (frames extracted from video usually have none). Nothing is estimated.
+- `sequence` is parsed from the file name — `<group>_t<seconds>s` → `offset_s`, `<group>_<n>` →
+  `index` — and marked `"source": "filename"`; `sequences` counts frames per group. Use it to keep
+  adjacent video frames out of both training and evaluation data (the split below is per image).
+- `auto_label.model_version` is resolved from the auto-label weights' training run; `null` for
+  pretrained weights. `review.status` is `unreviewed` for `kind: model` sets and
+  `ground_truth` is always `false`: an export is not a verification.
+- File names that would collide (same stem in two folders, or names differing only in case,
+  which Windows treats as one file) fail with `AMBIGUOUS_STEMS`.
+- Each export is a new immutable snapshot with its own id, size and SHA-256 (`label exports`).
 
 ## Validation (task-owned)
 

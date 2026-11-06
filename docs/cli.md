@@ -47,8 +47,10 @@ export), `--batch-size`, `--device`, `--min-images`, `--min-instances`, `--min-m
 |---|---|---|
 | `data import <name> [<source>] [--no-recursive]` | import images into the content-addressed asset store; default source = `dataset.sources` of type `local_images` | 0 (also when nothing new), 1 (`NO_IMAGES_FOUND`, `IMPORT_SOURCE_MISSING`), 2 (`NO_LOCAL_IMAGE_SOURCE`) |
 | `data list <name>` | import events and total asset count | 0 |
-| `label import <name> <path> [--format yolo] [--classes-file f] [--import id]…` | convert label files to a canonical label set (`kind: imported`) | 0, 1 (`NO_ASSETS`, `AMBIGUOUS_STEMS`, `LABEL_SOURCE_MISSING`) |
+| `label import <name> <path> [--format yolo] [--classes-file f] [--import id]… [--parent lbl]` | convert label files to a canonical label set (`kind: imported`); `--parent` records the set these labels were reviewed from (`parent_label_set_id`) | 0, 1 (`NO_ASSETS`, `AMBIGUOUS_STEMS`, `LABEL_SOURCE_MISSING`), 3 (`LABEL_NOT_FOUND` for `--parent`) |
 | `label list <name>` | label sets with counts and parse-issue totals | 0 |
+| `label export <name> <label-set-id> [--format yolo] [--include-images]` | write a review ZIP (`<name>_review/`: `labels/<frame>.txt` for every frame in the set's scope, empty = no objects; `classes.txt`; `manifest.json`; with `--include-images` also `images/`) to `artifacts/<name>/label_exports/<lex-id>/`; returns `export_id`, `bytes`, `sha256`, counts. Never writes to the label store | 0, 1 (`AMBIGUOUS_STEMS`, `LABEL_CLASS_UNKNOWN`), 2 (`LABEL_SET_ID_INVALID`, `LABEL_FORMAT_UNSUPPORTED`), 3 (`LABEL_NOT_FOUND`, `LABEL_FILE_MISSING`) |
+| `label exports <name>` | label exports with label set, counts, size and SHA-256 | 0 |
 | `dataset validate <name> [--labels id] [--import id]… [--verify-assets]` | task-owned validation report; writes nothing | 0 valid, 1 `DATASET_INVALID` (report still in `result`) |
 | `dataset build <name> [--labels id] [--import id]…` | validate, then build an immutable version; idempotent on content (`created: false`) | 0, 1 (`DATASET_INVALID`, `DATASET_BUILD_FAILED`) |
 | `dataset list <name>` | versions with state, counts, short hash; `*` marks the current pointer | 0 |

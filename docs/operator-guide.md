@@ -15,7 +15,7 @@ operates the pipeline remotely (Grok Bot) uses the SSH entry point and rules in
 |---|---|
 | project | `project create <p> [--task object_detection] [config options…]`, `project configure <p> <config options…>`, `project show <p>`, `project validate <p>`, `project list` |
 | data | `data import <p> [<dir-or-file>]`, `data list <p>` |
-| label | `label import <p> <dir> [--format yolo] [--classes-file f] [--import id]`, `label auto <p> [--wait]`, `label list <p>` |
+| label | `label import <p> <dir> [--format yolo] [--classes-file f] [--import id] [--parent lbl]`, `label auto <p> [--wait]`, `label list <p>`, `label export <p> <lbl> [--include-images]`, `label exports <p>` |
 | dataset | `dataset validate <p>`, `dataset build <p>`, `dataset list <p>`, `dataset show <p> <ds>` |
 | train / runs | `train start <p> [--dataset ds] [--candidate c] [--wait]`, `run status <p> <run> [--wait] [--tail N]`, `run list <p>`, `run logs <p> <run>`, `run cancel <p> <run>` |
 | evaluate / model | `evaluate run <p> <mv> [--wait]`, `model list <p>`, `model show <p> <mv>`, `model register <p> <run>`, `model select <p> [<mv>]` |
@@ -33,6 +33,7 @@ project create P            # once; then edit projects/P/project.yaml (classes, 
 project validate P
 data import P [<dir>]       # default: dataset.sources in project.yaml; re-import is a no-op
 label import P <dir> --classes-file names.txt     # or: label auto P --wait  (pretrained model)
+label export P <lbl>        # auto-labels -> review ZIP; reviewed labels come back via label import --parent <lbl>
 dataset validate P          # fix reported ERRORs; WARNINGs do not block unless configured
 dataset build P             # -> ds-vNNN (idempotent for identical content)
 train start P --wait        # -> run-…, model mv-NNN (TRAINED)
