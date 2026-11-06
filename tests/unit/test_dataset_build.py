@@ -112,6 +112,8 @@ def test_build_is_deterministic_idempotent_and_immutable(demo_project, tmp_path)
     for m in manifest:
         assert (ddir / m["image"]).is_file() and (ddir / m["label"]).is_file()
         assert m["split"] in ("train", "val", "test")
+        assert "group_id" not in m
+    assert rec["validation"]["stats"]["grouping"]["mode"] == "image"
     assert {m["split"] for m in manifest} == {"train", "val", "test"}
     assert (ddir / "data.yaml").read_text().startswith("path: .")
     assert json.loads((ddir / "dataset.json").read_text())["content_hash"] == rec["content_hash"]
@@ -262,6 +264,78 @@ def test_no_label_set_is_a_warning_and_scoped_imports(demo_project, tmp_path):
     assert "TOO_FEW_INSTANCES" in [e.code for e in plan.report.errors]  # min 1 instance, none
     with pytest.raises(NotFoundError):
         plan_dataset(demo_project, label_set_id="lbl-missing")
+
+
+def test_video_session_split_is_contiguous_and_reuses_the_version(demo_project, tmp_path):
+    src = tmp_path / "src"
+    paths = []
+    for n, clock in enumerate(("120000", "120500", "121000")):
+        for k in range(10):
+            off = 1 if k == 0 else 280 if k == 9 else 2 + k
+            paths.append(
+                make_image(src / f"cam0_20261106_{clock}_t{off:04d}s.jpg", seed=n * 10 + k + 1)
+            )
+    write_yolo_labels(tmp_path / "labels", [p.stem for p in paths])
+    import_images(demo_project, [src])
+    import_labels(demo_project, tmp_path / "labels", fmt="yolo")
+    plan = plan_dataset(demo_project)
+    assert plan.valid, plan.report.to_dict()
+    grouping = plan.report.stats["grouping"]
+    assert grouping["mode"] == "temporal" and grouping["n_groups"] == 1 and grouping["n_clips"] == 3
+    assert [c["split"] for c in grouping["clips"]] == ["train", "val", "test"]
+    assert len(grouping["cuts"]) == 2
+    rec, created = build_dataset(demo_project, plan)
+    assert created
+    manifest = [
+        json.loads(line)
+        for line in (dataset_dir(demo_project, rec["dataset_version"]) / "manifest.jsonl")
+        .read_text()
+        .splitlines()
+    ]
+    assert {m["group_id"] for m in manifest} == {grouping["group_ids"][0]}
+    again, created_again = build_dataset(demo_project, plan_dataset(demo_project))
+    assert not created_again and again["content_hash"] == rec["content_hash"]
+
+
+def test_model_label_set_is_not_treated_as_ground_truth(demo_project, tmp_path):
+    from ai_pipeline.core.labeling.annotations import Annotation, AnnotationSource, BoundingBox
+    from ai_pipeline.core.labeling.labelsets import create_label_set
+
+    src = tmp_path / "src"
+    make_image_set(src, 4)
+    imp = import_images(demo_project, [src])
+    from ai_pipeline.core.data.importer import scoped_asset_infos
+
+    assets = scoped_asset_infos(demo_project, [imp["import_id"]])
+    lid = "lbl-20260101-000000-abcd"
+    src_ann = AnnotationSource(kind="model", label_set_id=lid, provider="fake")
+    anns = [
+        Annotation(
+            asset_id=a.asset_id,
+            class_name="person",
+            bbox=BoundingBox(x_min=0.1, y_min=0.1, x_max=0.4, y_max=0.4),
+            confidence=0.5,
+            source=src_ann,
+        )
+        for a in assets
+    ]
+    create_label_set(
+        demo_project,
+        label_set_id=lid,
+        annotations=anns,
+        source={"kind": "model", "provider": "fake"},
+        scope_assets=assets,
+        import_ids=[imp["import_id"]],
+        labeled_asset_ids={a.asset_id for a in assets},
+    )
+    plan = plan_dataset(demo_project, label_set_id=lid, import_ids=[imp["import_id"]])
+    assert plan.report.stats["labels_ground_truth"] is False
+    assert plan.report.stats["verified_negative_images"] == 0
+    assert "UNREVIEWED_LABELS" in {i.code for i in plan.report.warnings}
+    assert "UNREVIEWED_LABELS" not in {i.code for i in plan.report.errors}
+    # The warning does not drop frames; every imported image is still in the plan.
+    assert len(plan.assets) == 4
+    assert set(plan.split) == {a.asset_id for a in plan.assets}
 
 
 def test_failed_build_is_recorded_and_not_reused(demo_project, tmp_path, monkeypatch):

@@ -31,9 +31,17 @@ def _report_text(plan: DatasetPlan, max_issues: int = 30) -> str:
         f"images={s.get('images')} annotations={s.get('annotations')} "
         f"empty={s.get('empty_images')} splits={s.get('split_counts')}",
         f"classes={s.get('class_distribution')}",
-        f"errors={len(rep.errors)} warnings={len(rep.warnings)} "
-        f"(fail_on_warnings={plan.fail_on_warnings}) -> {'VALID' if plan.valid else 'INVALID'}",
     ]
+    grouping = s.get("grouping") or {}
+    if grouping.get("mode") not in (None, "image"):
+        lines.append(
+            f"grouping={grouping.get('mode')} groups={grouping.get('n_groups')} "
+            f"clips={grouping.get('n_clips')} cuts={len(grouping.get('cuts') or [])}"
+        )
+    lines.append(
+        f"errors={len(rep.errors)} warnings={len(rep.warnings)} "
+        f"(fail_on_warnings={plan.fail_on_warnings}) -> {'VALID' if plan.valid else 'INVALID'}"
+    )
     for issue in rep.issues[:max_issues]:
         where = f" [{issue.asset_id[:12]}]" if issue.asset_id else ""
         lines.append(f"  {issue.severity.value:<7} {issue.code}{where}: {issue.message}")

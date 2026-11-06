@@ -35,7 +35,8 @@ Configuration options (M7), identical for `create` and `configure`: `--descripti
 unless `--auto-label-map` is given), `--source <dir>` (single `local_images` source),
 `--weights <file>` (single model candidate), `--auto-label-weights`, `--auto-label-map
 'coco:project,…'`, `--auto-label-confidence`, `--epochs`, `--image-size` (training **and**
-export), `--batch-size`, `--device`, `--min-images`, `--min-instances`, `--min-map50`,
+export), `--batch-size`, `--device`, `--min-images`, `--min-instances`, `--max-empty-ratio`
+(`dataset.validation.max_empty_label_ratio`; empty frames are kept), `--min-map50`,
 `--target`, `--precision`, `--confidence`, and `--set key.path=value` (repeatable; YAML value;
 `project.name`, `project.task_type`, `schema_version` are protected). Comments in
 `project.yaml` are not preserved.

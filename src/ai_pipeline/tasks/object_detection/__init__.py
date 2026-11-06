@@ -62,6 +62,7 @@ class ObjectDetectionTask:
         parse_issues: list[ParseIssue],
         split: dict[str, str],
         asset_files_ok: dict[str, bool] | None = None,
+        label_source_kind: str | None = None,
     ) -> ValidationReport:
         return validate_detection_dataset(
             cfg,
@@ -70,6 +71,7 @@ class ObjectDetectionTask:
             parse_issues=parse_issues,
             split=split,
             asset_files_ok=asset_files_ok,
+            label_source_kind=label_source_kind,
         )
 
     def write_data_config(self, dataset_dir: Path, *, classes: list[str]) -> Path:

@@ -3,8 +3,10 @@ from __future__ import annotations
 import random
 
 from ai_pipeline.core.config.schema import SplitConfig
+from ai_pipeline.core.data.assets import AssetInfo
+from ai_pipeline.core.dataset.grouping import grouping_from_assets
 from ai_pipeline.core.dataset.hashing import dataset_content_hash
-from ai_pipeline.core.dataset.split import assign_splits, split_sizes
+from ai_pipeline.core.dataset.split import assign_splits, split_assets, split_sizes
 from ai_pipeline.core.labeling.annotations import Annotation, AnnotationSource, BoundingBox
 
 IDS = [f"{i:064x}" for i in range(50)]
@@ -76,6 +78,172 @@ def test_assign_splits_is_order_independent_and_deterministic():
 
 def test_seed_changes_assignment():
     assert assign_splits(IDS, _split_cfg(seed=1)) != assign_splits(IDS, _split_cfg(seed=2))
+
+
+def _asset(aid: str, name: str) -> AssetInfo:
+    return AssetInfo(
+        asset_id=aid,
+        ext=".jpg",
+        width=8,
+        height=8,
+        size_bytes=1,
+        format="JPEG",
+        original_filenames=[name],
+        first_imported_at="t",
+    )
+
+
+def _aid(i: int) -> str:
+    return f"{i:064x}"
+
+
+def _clip_frames(clock: str, n: int, max_off: int, start: int) -> list[AssetInfo]:
+    assets = []
+    for k in range(n):
+        off = 1 if n == 1 or k == 0 else max_off if k == n - 1 else min(max_off - 1, 2 + k)
+        assets.append(_asset(_aid(start + k), f"cam0_20261106_{clock}_t{off:04d}s.jpg"))
+    return assets
+
+
+# Observed cam0_20261106 clip sizes from the rodent recording (12 five-minute files).
+_RAT_CLIPS = (
+    ("143807", 107, 63, 291),
+    ("144304", 72, 46, 294),
+    ("144804", 33, 9, 271),
+    ("145304", 59, 27, 297),
+    ("145804", 43, 13, 298),
+    ("150304", 35, 12, 271),
+    ("150804", 59, 40, 300),
+    ("151305", 88, 32, 299),
+    ("151805", 75, 26, 297),
+    ("152305", 63, 27, 295),
+    ("152805", 63, 52, 299),
+    ("153305", 35, 23, 299),
+)
+
+
+def test_numbered_images_keep_the_per_image_split():
+    assets = [_asset(_aid(i), f"img_{i:03d}.jpg") for i in range(50)]
+    grouping = grouping_from_assets(assets)
+    assert not grouping.uses_video_groups
+    ids = [a.asset_id for a in assets]
+    got, summary = split_assets(ids, _split_cfg(), grouping)
+    assert summary["mode"] == "image" and summary["cuts"] == []
+    assert got == assign_splits(ids, _split_cfg())
+
+
+def test_rat_shaped_session_is_cut_on_clip_boundaries_only():
+    """One afternoon of consecutive clips stays contiguous: one temporal cut, no interleaving."""
+    assets: list[AssetInfo] = []
+    class_counts: dict[str, dict[str, int]] = {}
+    cursor = 0
+    for clock, n, boxes, max_off in _RAT_CLIPS:
+        frames = _clip_frames(clock, n, max_off, cursor)
+        class_counts[frames[0].asset_id] = {"rodent": boxes}
+        assets.extend(frames)
+        cursor += n
+    assert len(assets) == 732
+    grouping = grouping_from_assets(assets)
+    assert len(grouping.groups) == 1
+    assert grouping.groups[0].group_id == "session:cam0_20261106_143807"
+    assert len(grouping.groups[0].clips) == 12
+
+    cfg = _split_cfg(train=0.9, val=0.1, test=0.0)
+    ids = [a.asset_id for a in assets]
+    assignment, summary = split_assets(ids, cfg, grouping, class_counts)
+    assert set(assignment) == set(ids)
+    assert summary["mode"] == "temporal" and len(summary["cuts"]) == 1
+    by_clip: list[str] = []
+    for clip in summary["clips"]:
+        members = {
+            assignment[a.asset_id]
+            for a in assets
+            if a.original_filenames[0].startswith(f"cam0_20261106_{clip['clip_id'].split('_')[-1]}")
+            or clip["clip_id"] in a.original_filenames[0]
+        }
+        # Every frame of the clip shares the recorded split.
+        assert members == {clip["split"]}
+        by_clip.append(clip["split"])
+    assert by_clip[0] == "train" and by_clip[-1] == "val"
+    # Partitions are contiguous along the recording. Consecutive clips differ at most once.
+    changes = [i for i in range(1, len(by_clip)) if by_clip[i] != by_clip[i - 1]]
+    assert changes == [10]
+    cut = summary["cuts"][0]
+    assert cut["left_split"] == "train" and cut["right_split"] == "val"
+    assert all(split == "train" for split in by_clip[:10])
+    assert all(split == "val" for split in by_clip[10:])
+
+
+def test_consecutive_clips_merge_and_a_later_session_stays_whole():
+    morning = _clip_frames("100000", 8, 290, 0) + _clip_frames("100500", 8, 290, 8)
+    evening = _clip_frames("180000", 8, 290, 16) + _clip_frames("180500", 8, 290, 24)
+    assets = morning + evening
+    grouping = grouping_from_assets(assets)
+    assert len(grouping.groups) == 2
+    assert all(group.group_id.startswith("session:") for group in grouping.groups)
+    ids = [a.asset_id for a in assets]
+    # Half the frames each; the two sessions must not be mixed inside a clip.
+    assignment, summary = split_assets(ids, _split_cfg(train=0.5, val=0.5, test=0.0), grouping)
+    assert summary["mode"] == "group" and summary["cuts"] == []
+    splits = {summary["clips"][0]["split"], summary["clips"][2]["split"]}
+    assert splits == {"train", "val"}
+    for clip in summary["clips"]:
+        assert len({assignment[a] for a in _assets_of(assets, clip["clip_id"])}) == 1
+
+
+def _assets_of(assets: list[AssetInfo], clip_id: str) -> list[str]:
+    return [a.asset_id for a in assets if clip_id in a.original_filenames[0]]
+
+
+def test_a_single_clip_is_not_divided_to_fill_validation():
+    assets = _clip_frames("143807", 20, 40, 0)
+    grouping = grouping_from_assets(assets)
+    assert len(grouping.groups) == 1 and len(grouping.groups[0].clips) == 1
+    ids = [a.asset_id for a in assets]
+    assignment, summary = split_assets(ids, _split_cfg(train=0.8, val=0.2, test=0.0), grouping)
+    assert summary["mode"] == "group" and summary["cuts"] == []
+    assert set(assignment.values()) == {"train"}
+
+
+def test_temporal_cut_prefers_class_balance_when_sizes_tie():
+    # Three equal clips, one session. 0.5/0.5 leaves two cuts with the same size error;
+    # the cut that puts both classes in val wins.
+    assets = (
+        _clip_frames("120000", 10, 280, 0)
+        + _clip_frames("120500", 10, 280, 10)
+        + _clip_frames("121000", 10, 280, 20)
+    )
+    grouping = grouping_from_assets(assets)
+    assert len(grouping.groups) == 1
+    class_counts = {
+        assets[0].asset_id: {"a": 10},
+        assets[10].asset_id: {"a": 10},
+        assets[20].asset_id: {"b": 10},
+    }
+    ids = [a.asset_id for a in assets]
+    assignment, summary = split_assets(
+        ids, _split_cfg(train=0.5, val=0.5, test=0.0), grouping, class_counts
+    )
+    assert summary["mode"] == "temporal"
+    assert [clip["split"] for clip in summary["clips"]] == ["train", "val", "val"]
+    assert assignment[assets[0].asset_id] == "train"
+    assert assignment[assets[20].asset_id] == "val"
+
+
+def test_grouped_split_is_order_independent():
+    assets = _clip_frames("100000", 6, 290, 0) + _clip_frames("180000", 6, 290, 6)
+    grouping = grouping_from_assets(assets)
+    ids = [a.asset_id for a in assets]
+    cfg = _split_cfg(train=0.5, val=0.5, test=0.0, seed=3)
+    shuffled = ids[:]
+    random.Random(1).shuffle(shuffled)
+    assert split_assets(ids, cfg, grouping)[0] == split_assets(shuffled, cfg, grouping)[0]
+
+
+def test_windows_video_names_group():
+    asset = _asset(_aid(1), "images\\cam0_20261106_143807_t0001s.jpg")
+    grouping = grouping_from_assets([asset])
+    assert grouping.by_asset[_aid(1)] == "clip:cam0_20261106_143807"
 
 
 # --- hash -----------------------------------------------------------------------------------------

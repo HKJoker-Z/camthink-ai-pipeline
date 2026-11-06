@@ -25,8 +25,9 @@ from typing import Any
 
 from ai_pipeline.core.data.assets import READ_ONLY, AssetInfo
 from ai_pipeline.core.data.importer import asset_store, scoped_asset_infos
+from ai_pipeline.core.dataset.grouping import grouping_from_assets
 from ai_pipeline.core.dataset.hashing import HASH_SPEC, dataset_content_hash
-from ai_pipeline.core.dataset.split import assign_splits
+from ai_pipeline.core.dataset.split import split_assets
 from ai_pipeline.core.dataset.validation import ValidationReport
 from ai_pipeline.core.errors import OperationError, StateError
 from ai_pipeline.core.ids import next_sequential_id, utc_now_iso
@@ -66,6 +67,24 @@ class DatasetPlan:
         return self.report.is_valid(fail_on_warnings=self.fail_on_warnings)
 
 
+def _warn_if_groups_block_a_split(report: ValidationReport, summary: dict, split_cfg) -> None:
+    """A recording kept whole can leave val or test empty. Say so; do not break the group."""
+    if summary.get("mode") == "image":
+        return
+    fractions = {"train": split_cfg.train, "val": split_cfg.val, "test": split_cfg.test}
+    counts = report.stats.get("split_counts") or {}
+    missing = [name for name, frac in fractions.items() if frac > 0 and not counts.get(name)]
+    if not missing:
+        return
+    report.warning(
+        "INDIVISIBLE_GROUPS",
+        f"kept {summary.get('n_groups')} video group(s) whole, so split(s) {missing} received "
+        "no images. Frames from one recording stay together.",
+        splits=missing,
+        group_ids=summary.get("group_ids") or [],
+    )
+
+
 def dataset_dir(project: Project, version: str) -> Path:
     return project.store.root / "datasets" / version
 
@@ -99,7 +118,15 @@ def plan_dataset(
             annotations = [a for a in annotations if a.asset_id in in_scope]
 
     asset_ids = [a.asset_id for a in assets]
-    split = assign_splits(asset_ids, cfg.dataset.split)
+    grouping = grouping_from_assets(assets)
+    per_asset_classes: dict[str, dict[str, int]] = {}
+    for ann in annotations:
+        per_asset_classes.setdefault(ann.asset_id, {})
+        bucket = per_asset_classes[ann.asset_id]
+        bucket[ann.class_name] = bucket.get(ann.class_name, 0) + 1
+    split, grouping_summary = split_assets(
+        asset_ids, cfg.dataset.split, grouping, per_asset_classes
+    )
 
     store = asset_store(project)
     files_ok = {
@@ -107,9 +134,19 @@ def plan_dataset(
         for a in assets
     }
 
+    source = ((record or {}).get("source") or {}) if record else {}
+    source_kind = source.get("kind")
     report = task.validate(
-        cfg, assets, annotations, parse_issues=parse_issues, split=split, asset_files_ok=files_ok
+        cfg,
+        assets,
+        annotations,
+        parse_issues=parse_issues,
+        split=split,
+        asset_files_ok=files_ok,
+        label_source_kind=source_kind,
     )
+    report.stats["grouping"] = grouping_summary
+    _warn_if_groups_block_a_split(report, grouping_summary, cfg.dataset.split)
     if label_set_id is None:
         report.warning("NO_LABEL_SET", "no label set available; all images are unlabeled")
 
@@ -136,6 +173,7 @@ def plan_dataset(
         classes=list(cfg.dataset.classes),
         fail_on_warnings=cfg.dataset.validation.fail_on_warnings,
         existing_version=existing,
+        extra={"group_of": dict(grouping.by_asset) if grouping.uses_video_groups else {}},
     )
 
 
@@ -282,24 +320,20 @@ def _materialise(project: Project, task, store, plan: DatasetPlan, ddir: Path, r
                 encoding="utf-8",
             )
             size += a.size_bytes
-            manifest.write(
-                json.dumps(
-                    {
-                        "asset_id": a.asset_id,
-                        "split": split,
-                        "image": str(img_rel),
-                        "label": str(lbl_rel),
-                        "width": a.width,
-                        "height": a.height,
-                        "n_annotations": len(by_asset.get(a.asset_id, [])),
-                        "original_filename": a.original_filenames[0]
-                        if a.original_filenames
-                        else None,
-                    },
-                    sort_keys=True,
-                )
-                + "\n"
-            )
+            row = {
+                "asset_id": a.asset_id,
+                "split": split,
+                "image": str(img_rel),
+                "label": str(lbl_rel),
+                "width": a.width,
+                "height": a.height,
+                "n_annotations": len(by_asset.get(a.asset_id, [])),
+                "original_filename": a.original_filenames[0] if a.original_filenames else None,
+            }
+            group_id = (plan.extra.get("group_of") or {}).get(a.asset_id)
+            if group_id:
+                row["group_id"] = group_id
+            manifest.write(json.dumps(row, sort_keys=True) + "\n")
     for split in ("train", "val", "test"):  # providers expect the directories to exist
         (ddir / "images" / split).mkdir(parents=True, exist_ok=True)
         (ddir / "labels" / split).mkdir(parents=True, exist_ok=True)

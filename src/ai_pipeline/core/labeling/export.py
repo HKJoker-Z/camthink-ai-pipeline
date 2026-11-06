@@ -34,6 +34,7 @@ from PIL import Image
 
 from ai_pipeline.core.data.assets import AssetInfo, original_basename
 from ai_pipeline.core.data.importer import asset_store, scoped_asset_infos
+from ai_pipeline.core.dataset.grouping import sequence_hint
 from ai_pipeline.core.errors import ConfigError, OperationError
 from ai_pipeline.core.ids import new_event_id, utc_now_iso
 from ai_pipeline.core.labeling.annotations import Annotation, BoundingBox, group_by_asset
@@ -48,26 +49,9 @@ KIND = "label_exports"
 MANIFEST_SCHEMA_VERSION = 1
 LABEL_SET_ID_RE = re.compile(r"^lbl-\d{8}-\d{6}-[0-9a-f]{4}$")
 REVIEW_STATUS = {"model": "unreviewed", "imported": "imported", "human": "human_reviewed"}
-_SEQ_OFFSET = re.compile(r"^(?P<group>.+?)[_-]t(?P<offset>\d+(?:\.\d+)?)s$")
-_SEQ_INDEX = re.compile(r"^(?P<group>.*?[A-Za-z].*?)[_-]?(?P<index>\d+)$")
 _EXIF_DATETIME_ORIGINAL = 0x9003
 _EXIF_DATETIME = 0x0132
 _EXIF_IFD = 0x8769
-
-
-def sequence_hint(stem: str) -> dict[str, Any] | None:
-    m = _SEQ_OFFSET.match(stem)
-    if m:
-        off = float(m["offset"])
-        return {
-            "group": m["group"],
-            "offset_s": int(off) if off.is_integer() else off,
-            "source": "filename",
-        }
-    m = _SEQ_INDEX.match(stem)
-    if m:
-        return {"group": m["group"].rstrip("_-"), "index": int(m["index"]), "source": "filename"}
-    return None
 
 
 def exif_timestamp(path: Path) -> str | None:

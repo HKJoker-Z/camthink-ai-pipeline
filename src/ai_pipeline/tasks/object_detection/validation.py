@@ -29,6 +29,7 @@ def validate_detection_dataset(
     parse_issues: list[ParseIssue],
     split: dict[str, str],
     asset_files_ok: dict[str, bool] | None = None,
+    label_source_kind: str | None = None,
 ) -> ValidationReport:
     rep = ValidationReport()
     classes = cfg.dataset.classes
@@ -108,8 +109,15 @@ def validate_detection_dataset(
             class_counts[ann.class_name] += 1
 
     # -- dataset-level policy
+    # Empty frames are never removed. max_empty_label_ratio only decides whether a set this
+    # sparse is accepted; rare-object projects raise it and keep every negative.
     n_images = len(asset_ids)
     empty = [aid for aid in sorted(asset_ids) if not by_asset.get(aid)]
+    unreviewed = label_source_kind == "model"
+    # Human and imported label files are the labels the operator supplied, including empties.
+    # Model output has not been reviewed, so an empty frame is "nothing proposed", not a
+    # verified negative, and a box is not ground truth.
+    verified_labels = label_source_kind in {"human", "imported"}
     if n_images < vcfg.min_images:
         rep.error("TOO_FEW_IMAGES", f"{n_images} images < min_images {vcfg.min_images}")
     if n_images and len(empty) / n_images > vcfg.max_empty_label_ratio:
@@ -117,9 +125,30 @@ def validate_detection_dataset(
             "TOO_MANY_EMPTY_IMAGES",
             f"{len(empty)}/{n_images} images have no annotations "
             f"(> max_empty_label_ratio {vcfg.max_empty_label_ratio})",
+            empty_images=len(empty),
+            images=n_images,
+            max_empty_label_ratio=vcfg.max_empty_label_ratio,
         )
-    elif empty:
-        rep.warning("EMPTY_IMAGES", f"{len(empty)} image(s) without annotations (background)")
+    if empty:
+        if unreviewed:
+            rep.warning(
+                "EMPTY_IMAGES",
+                f"{len(empty)}/{n_images} image(s) have no boxes; not verified negatives "
+                "(label set is unreviewed model output)",
+            )
+        else:
+            rep.warning("EMPTY_IMAGES", f"{len(empty)} image(s) without annotations (background)")
+    if unreviewed:
+        rep.warning(
+            "UNREVIEWED_LABELS",
+            "annotations come from an unreviewed model label set and are not verified ground truth",
+            source_kind=label_source_kind,
+        )
+    if n_images and len(empty) > n_images / 2:
+        rep.warning(
+            "CLASS_IMBALANCE",
+            f"background frames {len(empty)}/{n_images} outnumber images with objects",
+        )
     for cls in classes:
         n = class_counts.get(cls, 0)
         if n < vcfg.min_instances_per_class:
@@ -153,11 +182,35 @@ def validate_detection_dataset(
         )
         for s in ("train", "val", "test")
     }
+    present = {cls: class_counts.get(cls, 0) for cls in classes if class_counts.get(cls, 0) > 0}
+    if len(present) >= 2:
+        lo, hi = min(present.values()), max(present.values())
+        if lo * 5 < hi:
+            rep.warning(
+                "CLASS_IMBALANCE",
+                f"least common class has {lo} instance(s), most common has {hi}",
+            )
+    for split_name, per_split in split_class_counts.items():
+        # A split that is entirely background is EMPTY_IMAGES, not a missing-class split.
+        if split_counts.get(split_name, 0) == 0 or sum(per_split.values()) == 0:
+            continue
+        missing = [cls for cls, n in present.items() if per_split.get(cls, 0) == 0]
+        if missing:
+            rep.warning(
+                "CLASS_IMBALANCE",
+                f"split {split_name!r} has no instances of {missing}",
+                split=split_name,
+                classes=missing,
+            )
 
     rep.stats = {
         "images": n_images,
         "annotations": sum(class_counts.values()),
         "empty_images": len(empty),
+        "verified_negative_images": len(empty) if verified_labels else 0,
+        "unreviewed_empty_images": len(empty) if unreviewed else 0,
+        "labels_ground_truth": verified_labels,
+        "label_source_kind": label_source_kind,
         "class_distribution": dict(sorted(class_counts.items())),
         "split_counts": {s: split_counts.get(s, 0) for s in ("train", "val", "test")},
         "split_class_distribution": split_class_counts,
