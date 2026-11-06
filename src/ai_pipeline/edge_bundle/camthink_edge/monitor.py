@@ -264,28 +264,30 @@ def run_monitor(
     restart_required = {"inference": False, "liveview": False}
     boot_cfg = cfg
 
-    def reload_config() -> None:
+    def reload_config() -> bool:
+        """Re-read app.json if it changed; True when the live settings were updated."""
         nonlocal cfg_mtime
         try:
             m = cfg_path.stat().st_mtime
         except OSError:
-            return
+            return False
         if m == cfg_mtime:
-            return
+            return False
         cfg_mtime = m
         try:
             new = appcfg.load(root)
         except Exception as exc:  # noqa: BLE001
             print(json.dumps({"config_reload_error": str(exc)}), flush=True)
-            return
+            return False
         if appcfg.validate(new):
             print(json.dumps({"config_reload_error": appcfg.validate(new)}), flush=True)
-            return
+            return False
         cs.set_fps_limit(float(new["inference"]["fps"]))
         cs.set_confidence(new["inference"].get("confidence"))
         req = appcfg.restart_required(boot_cfg, new)
         restart_required["inference"] = req["inference"]
         cfg_ref["cfg"] = new
+        return True
 
     def stats_payload(state: str) -> dict[str, Any]:
         chans = [c.stats() for c in cs.channels]
@@ -335,34 +337,43 @@ def run_monitor(
         ),
         flush=True,
     )
+
+    def write_heartbeat() -> None:
+        chans = cs.channels
+        res = chans[0].result if chans else None
+        heartbeat(
+            deployment=current,
+            frames=sum(c.frames for c in chans),
+            errors=sum(c.errors for c in chans),
+            fps=chans[0].stats()["fps"] if chans else 0.0,
+            state="running",
+            camera_connected=all(c.source.stats()["connected"] for c in chans),
+            channels=len(chans),
+            last_detections=(res or {}).get("detections", [])[:10],
+            last_detection_count=len((res or {}).get("detections", [])),
+            config_restart_required=restart_required["inference"],
+        )
+
     last_hb = 0.0
     last_stats = 0.0
     last_reload = 0.0
     try:
         while not stop.is_set():
             now = time.monotonic()
+            changed = False
             if now - last_reload >= 2.0:
-                reload_config()
+                changed = reload_config()
                 last_reload = now
-            if now - last_stats >= 1.0:
+            # The heartbeat (status.json, read by the pipeline's health/status) and stats.json
+            # (read by the live view) run on different cadences; after a config change both
+            # are rewritten in this very iteration, heartbeat first, so a reader never sees
+            # stats.json announce a pending restart that the heartbeat does not know about.
+            if changed or now - last_hb >= heartbeat_s:
+                write_heartbeat()
+                last_hb = now
+            if changed or now - last_stats >= 1.0:
                 _write_json_atomic(live / "stats.json", stats_payload("running"))
                 last_stats = now
-            if now - last_hb >= heartbeat_s:
-                chans = cs.channels
-                res = chans[0].result if chans else None
-                heartbeat(
-                    deployment=current,
-                    frames=sum(c.frames for c in chans),
-                    errors=sum(c.errors for c in chans),
-                    fps=chans[0].stats()["fps"] if chans else 0.0,
-                    state="running",
-                    camera_connected=all(c.source.stats()["connected"] for c in chans),
-                    channels=len(chans),
-                    last_detections=(res or {}).get("detections", [])[:10],
-                    last_detection_count=len((res or {}).get("detections", [])),
-                    config_restart_required=restart_required["inference"],
-                )
-                last_hb = now
             stop.wait(0.2)
     finally:
         pub.stop()

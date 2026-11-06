@@ -190,9 +190,10 @@ class SystemMonitor:
             except Exception:  # noqa: BLE001
                 pass
         self.backend = "proc"
-        while not self._stop_evt.is_set():
+        # cpu_pct is a delta against the /proc/stat baseline taken in __init__; sampling
+        # immediately would land in the same jiffy (dt == 0) and publish a sample without it.
+        while not self._stop_evt.wait(self.interval_s):
             self._push(self._from_proc())
-            time.sleep(self.interval_s)
 
     def _push(self, sample: dict[str, Any]) -> None:
         sample["ts"] = time.time()
