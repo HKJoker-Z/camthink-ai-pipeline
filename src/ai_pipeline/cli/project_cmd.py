@@ -52,6 +52,14 @@ _MIN_IMAGES = typer.Option(None, "--min-images", min=1, help="dataset.validation
 _MIN_INSTANCES = typer.Option(
     None, "--min-instances", min=0, help="dataset.validation.min_instances_per_class"
 )
+_MAX_EMPTY = typer.Option(
+    None,
+    "--max-empty-ratio",
+    min=0.0,
+    max=1.0,
+    help="dataset.validation.max_empty_label_ratio. Empty frames are kept; this only gates "
+    "whether that many unlabeled images are accepted.",
+)
 _MIN_MAP50 = typer.Option(None, "--min-map50", help="evaluation.acceptance.mAP50.min")
 _TARGET = typer.Option(None, "--target", help="deployment.target (name from infrastructure.yaml)")
 _PRECISION = typer.Option(None, "--precision", help="deployment.precision: fp16 | fp32")
@@ -86,6 +94,7 @@ def create(
     device: str | None = _DEVICE,
     min_images: int | None = _MIN_IMAGES,
     min_instances: int | None = _MIN_INSTANCES,
+    max_empty_ratio: float | None = _MAX_EMPTY,
     min_map50: float | None = _MIN_MAP50,
     target: str | None = _TARGET,
     precision: str | None = _PRECISION,
@@ -110,6 +119,7 @@ def create(
             device=device,
             min_images=min_images,
             min_instances=min_instances,
+            max_empty_ratio=max_empty_ratio,
             min_map50=min_map50,
             target=target,
             precision=precision,
@@ -199,6 +209,7 @@ def configure(
     device: str | None = _DEVICE,
     min_images: int | None = _MIN_IMAGES,
     min_instances: int | None = _MIN_INSTANCES,
+    max_empty_ratio: float | None = _MAX_EMPTY,
     min_map50: float | None = _MIN_MAP50,
     target: str | None = _TARGET,
     precision: str | None = _PRECISION,
@@ -227,6 +238,7 @@ def configure(
             device=device,
             min_images=min_images,
             min_instances=min_instances,
+            max_empty_ratio=max_empty_ratio,
             min_map50=min_map50,
             target=target,
             precision=precision,

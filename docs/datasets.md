@@ -113,8 +113,9 @@ label set back into files a human annotation tool can open, without touching the
 - `confidence` is the stored model score or `null`; `timestamp` comes from the image's EXIF
   capture time or is `null` (frames extracted from video usually have none). Nothing is estimated.
 - `sequence` is parsed from the file name — `<group>_t<seconds>s` → `offset_s`, `<group>_<n>` →
-  `index` — and marked `"source": "filename"`; `sequences` counts frames per group. Use it to keep
-  adjacent video frames out of both training and evaluation data (the split below is per image).
+  `index` — and marked `"source": "filename"`; `sequences` counts frames per group. The dataset
+  split uses the offset form (see below) so frames from one clip, and consecutive clips from one
+  recording, are not shuffled across train and validation.
 - `auto_label.model_version` is resolved from the auto-label weights' training run; `null` for
   pretrained weights. `review.status` is `unreviewed` for `kind: model` sets and
   `ground_truth` is always `false`: an export is not a verification.
@@ -140,11 +141,14 @@ assets, the chosen label set (default: latest READY) and the computed split. It 
 | `ASSET_BAD_DIMENSIONS` / `DUPLICATE_ASSET` | ERROR | structural problems |
 | `TOO_FEW_IMAGES` | ERROR | fewer than `validation.min_images` |
 | `TOO_FEW_INSTANCES` | ERROR | a class has fewer than `validation.min_instances_per_class` |
-| `TOO_MANY_EMPTY_IMAGES` | ERROR | empty ratio above `validation.max_empty_label_ratio` |
+| `TOO_MANY_EMPTY_IMAGES` | ERROR | empty ratio above `validation.max_empty_label_ratio`. Frames are not dropped; raise the ratio to keep a rare-object set |
 | `EMPTY_SPLIT` | ERROR | a split with fraction > 0 received 0 images |
 | `DUPLICATE_ANNOTATION` | WARNING | identical class+box repeated on one image |
 | `BBOX_TINY` | WARNING | normalised area below `1e-5` |
-| `EMPTY_IMAGES` | WARNING | some images have no annotations |
+| `EMPTY_IMAGES` | WARNING | some images have no annotations. Reported even when the ratio is also an error. For a model label set the message says these are not verified negatives |
+| `CLASS_IMBALANCE` | WARNING | background frames are a majority, one class has less than a fifth of the instances of another, or a non-empty split is missing a class the dataset contains |
+| `UNREVIEWED_LABELS` | WARNING | the label set is model output (`source.kind: model`). Boxes and empty frames are proposals, not verified ground truth (`labels_ground_truth: false`) |
+| `INDIVISIBLE_GROUPS` | WARNING | a video group was kept whole, so a split with a non-zero fraction got no images |
 | `NO_LABEL_SET` | WARNING | no label set exists; everything is unlabeled |
 
 Warnings never invalidate a dataset unless `dataset.validation.fail_on_warnings: true`.
@@ -153,7 +157,13 @@ The report (`valid`, counts, `issues_by_code`, `issues`, `stats`) is returned by
 
 ## Deterministic split
 
-Implemented in `ai_pipeline.core.dataset.split`:
+Implemented in `ai_pipeline.core.dataset.split`. The content hash still identifies the resulting
+assignment, the fractions and the seed (`dataset-hash-v1`). Group ids are not hashed on their
+own: a different assignment is a new version, and the same assignment reuses the existing one.
+
+### Images
+
+When no frame is a video clip, the split is per image and does not read file names:
 
 1. rank key per asset: `sha256("<seed>:<asset_id>")`;
 2. sort assets by rank key;
@@ -163,9 +173,38 @@ Implemented in `ai_pipeline.core.dataset.split`:
 
 No random number generator, no dependence on filenames, paths, import order or filesystem
 iteration order — the same assets, seed and fractions give the same assignment on every machine.
-Split membership is recorded per sample in `manifest.jsonl`. Adding or removing assets re-ranks
-and may move other assets between splits; that is a new dataset version anyway.
-Stratified splitting is not implemented in V1.
+Numbered images (`img_001.jpg`) stay on this path. Adding or removing assets re-ranks and may
+move other assets between splits; that is a new dataset version anyway.
+
+### Video clips and recording sessions
+
+A file stem `<clip>_t<seconds>s` (the offset form label export stores as `sequence`) puts the
+frame in that clip. Clips named `<camera>_<YYYYMMDD>_<HHMMSS>` that follow each other on the
+same camera, with at most three minutes between one clip's last frame and the next clip's
+start, are one recording session. Consecutive clips are therefore one group, not shuffled
+independently. `manifest.jsonl` records `group_id` for these frames, and
+`validation.stats.grouping` records the mode, clips and any cuts.
+
+Groups are assigned whole. Fractions are targets, not a reason to separate neighboring frames:
+
+- Several sessions, or a session plus ordinary images, are placed to approach the fractions.
+  Among placements that fill the splits about equally, the one closer to the class counts is
+  used. A session is not broken to hit a fraction exactly.
+- A dataset that is a single multi-clip session is cut on clip boundaries into contiguous
+  time ranges — earlier clips `train`, then `val`, then `test`. Only the clips on either side
+  of a cut are separated. The cut matches the fractions and, within about 2% of the dataset
+  size, the class balance. Each cut is listed in `validation.stats.grouping.cuts`.
+- One clip is never divided. If that leaves a split empty, validation reports `EMPTY_SPLIT`
+  and `INDIVISIBLE_GROUPS`.
+
+Empty frames are not removed to satisfy `max_empty_label_ratio`. A project that needs verified
+background (rodents are rare; most frames have no animal) raises
+`dataset.validation.max_empty_label_ratio` — `project configure <name> --max-empty-ratio 0.75`,
+or `--set dataset.validation.max_empty_label_ratio=0.75`. The ratio still errors when too much
+of the set is empty, and `EMPTY_IMAGES` / `CLASS_IMBALANCE` stay warnings. A model label set
+additionally warns `UNREVIEWED_LABELS`: those boxes and empty frames are not treated as
+verified ground truth (`verified_negative_images` stays 0; the empties are counted as
+`unreviewed_empty_images`).
 
 ## Dataset identity (content hash)
 

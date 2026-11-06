@@ -114,6 +114,58 @@ def test_warnings_do_not_invalidate_unless_policy_says_so():
     assert rep.to_dict(fail_on_warnings=True)["valid"] is False
 
 
+def test_raised_empty_ratio_keeps_every_frame_and_still_warns():
+    assets = [_asset(i) for i in range(10)]
+    anns = [_ann(i) for i in range(4)]  # 6/10 empty
+    kept = validate_detection_dataset(
+        _cfg(max_empty_label_ratio=0.75),
+        assets,
+        anns,
+        parse_issues=[],
+        split=_split(10),
+        label_source_kind="human",
+    )
+    assert "TOO_MANY_EMPTY_IMAGES" not in _codes(kept)
+    assert kept.stats["images"] == 10 and kept.stats["empty_images"] == 6
+    assert kept.stats["verified_negative_images"] == 6
+    assert kept.stats["labels_ground_truth"] is True
+    assert "EMPTY_IMAGES" in _codes(kept, "WARNING")
+    assert "CLASS_IMBALANCE" in _codes(kept, "WARNING")
+
+    rejected = validate_detection_dataset(
+        _cfg(max_empty_label_ratio=0.5),
+        assets,
+        anns,
+        parse_issues=[],
+        split=_split(10),
+        label_source_kind="imported",
+    )
+    assert "TOO_MANY_EMPTY_IMAGES" in _codes(rejected, "ERROR")
+    # The gate does not discard frames; the same ten images are still the dataset.
+    assert rejected.stats["images"] == 10 and rejected.stats["empty_images"] == 6
+    assert "EMPTY_IMAGES" in _codes(rejected, "WARNING")
+
+
+def test_unreviewed_model_labels_are_not_ground_truth():
+    assets = [_asset(i) for i in range(4)]
+    anns = [_ann(0), _ann(1)]
+    rep = validate_detection_dataset(
+        _cfg(),
+        assets,
+        anns,
+        parse_issues=[],
+        split=_split(4),
+        label_source_kind="model",
+    )
+    assert "UNREVIEWED_LABELS" in _codes(rep, "WARNING")
+    assert rep.stats["labels_ground_truth"] is False
+    assert rep.stats["verified_negative_images"] == 0
+    assert rep.stats["unreviewed_empty_images"] == 2
+    assert rep.is_valid()
+    empty = next(i for i in rep.warnings if i.code == "EMPTY_IMAGES")
+    assert "not verified negatives" in empty.message
+
+
 def test_dataset_level_policies():
     assets = [_asset(i) for i in range(4)]
     anns = [_ann(0)]

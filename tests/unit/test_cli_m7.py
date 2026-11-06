@@ -122,6 +122,15 @@ def test_project_configure_and_show(workspace: Path):
     assert p["result"]["config"]["training"]["epochs"] == 7
 
 
+def test_project_configure_max_empty_ratio(workspace: Path):
+    invoke_json("project", "create", "demo")
+    r, p = invoke_json("project", "configure", "demo", "--max-empty-ratio", "0.75")
+    assert r.exit_code == 0, p
+    assert _load(workspace)["dataset"]["validation"]["max_empty_label_ratio"] == 0.75
+    changed = [c["path"] for c in p["result"]["changes"]]
+    assert "dataset.validation.max_empty_label_ratio" in changed
+
+
 def test_project_configure_source_and_image_size(workspace: Path):
     invoke_json("project", "create", "demo")
     r, p = invoke_json(

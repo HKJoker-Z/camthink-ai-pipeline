@@ -93,6 +93,7 @@ def named_changes(
     device: str | None = None,
     min_images: int | None = None,
     min_instances: int | None = None,
+    max_empty_ratio: float | None = None,
     min_map50: float | None = None,
     target: str | None = None,
     precision: str | None = None,
@@ -135,6 +136,8 @@ def named_changes(
         out.append(("dataset.validation.min_images", min_images))
     if min_instances is not None:
         out.append(("dataset.validation.min_instances_per_class", min_instances))
+    if max_empty_ratio is not None:
+        out.append(("dataset.validation.max_empty_label_ratio", max_empty_ratio))
     if min_map50 is not None:
         out.append(("evaluation.acceptance.mAP50", {"min": min_map50}))
     if target is not None:
