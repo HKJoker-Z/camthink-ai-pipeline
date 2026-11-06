@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 from ai_pipeline import __version__
 from ai_pipeline.cli import (
+    app_cmd,
     data_cmd,
     dataset_cmd,
     deploy_cmd,
@@ -46,6 +47,7 @@ app.add_typer(export_cmd.app, name="export")
 app.add_typer(deploy_cmd.app, name="deploy")
 app.add_typer(deploy_cmd.target_app, name="target")
 app.add_typer(service_cmd.app, name="service")
+app.add_typer(app_cmd.app, name="app")
 deploy_cmd.target_app.command("status")(service_cmd.target_status_cmd)
 app.command("rollback")(deploy_cmd.rollback_cmd)
 app.command("health")(deploy_cmd.health_cmd)

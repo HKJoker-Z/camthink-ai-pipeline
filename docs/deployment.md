@@ -77,6 +77,10 @@ Export and deployment never transition a model. The model record keeps `exports:
 | `rollback(to)` | previous, current | re-points `current` (or removes it for `None`) |
 | `service_status()` (optional) | service, systemd_state, current, stopped, heartbeat | reads `<root>/service.json` |
 | `service_stop()` / `service_start()` / `service_restart()` (optional) | previous_state, state | flips `<root>/service.json`; stop records a marker |
+| `app_config_read()` / `app_config_write(cfg)` (optional, M9) | raw device app config (credentials!) / none | `<root>/service/app.json`, mode 0600 |
+| `source_probe(seconds, url)` (optional, M9) | ok, sources[{ok, frames, decode_fps, first_frame_s, error, …}] | synthetic; URLs containing `unreachable` fail |
+| `liveview_status(port)` / `liveview_start()` / `liveview_stop()` / `liveview_restart()` / `liveview_url(port)` (optional, M9) | service, systemd_state, enabled, port, url / previous_state, state | flips `<root>/liveview.json`; URL `http://fake-device.lan:<port>/` |
+| `live_stats()` (optional, M9) | the inference service's 1 Hz `stats.json` or None | synthetic when sources are configured and the service is active |
 
 The TensorRT engine is **target-owned**: it is built by `prepare` on the device and recorded on
 the Deployment (`runtime_artifact`), never on the ModelVersion or ExportArtifact.
@@ -117,6 +121,19 @@ the target. They never stage, build or re-point anything:
 owning project from the `current` ref (`<project>-dep-NNN`), looks up that deployment's model
 version, and reports service state, heartbeat, health and whether the owning project's
 `active_deployment` agrees. It is the authority when per-project pointers are stale.
+
+## Camera source and live view (M9)
+
+`app source|configure|liveview|status|metrics` (`ai_pipeline.core.edge_app`) bind the device's
+RTSP application to the project the same way: every mutating action and `app metrics` go through
+the ownership check (`DEVICE_OCCUPIED` when `current` is another project's), `app status` reports
+`ownership.matches` instead and withholds camera data. The camera URL is read from stdin, written
+to the device by scp as `<root>/service/app.json` (0600) and masked everywhere else; the
+inference service (M7 `service …`) picks it up on its next start/restart, while fps / confidence
+/ display settings hot-reload. The live-view web server is a second unit controlled only by
+`app liveview …`: stopping it never stops detection, starting it never rebuilds or restarts
+anything, and the URL it returns is reported together with a reachability check performed from
+the AI server (`url_verified`). Runtime details: [ng4511-deployment.md](ng4511-deployment.md#camera-live-view-m9).
 
 ## Deployment (`artifacts/<p>/deployments/dep-NNN.json`)
 

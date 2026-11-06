@@ -63,6 +63,20 @@ def main(argv: list[str] | None = None) -> int:
     sv.add_argument("--fps-limit", type=float, default=5.0)
     sv.add_argument("--heartbeat-s", type=float, default=2.0)
 
+    lv = sub.add_parser("liveview", help="live-view web server for the monitoring service")
+    lv.add_argument("--root", required=True)
+    lv.add_argument("--port", type=int, default=None, help="override liveview.port of app.json")
+    lv.add_argument("--bind", default=None, help="override liveview.bind of app.json")
+
+    pr = sub.add_parser("probe", help="test the configured camera source(s); read-only")
+    pr.add_argument("--root", required=True)
+    pr.add_argument("--seconds", type=float, default=5.0)
+    pr.add_argument("--source", default=None, help="probe this URL instead of app.json's")
+    pr.add_argument("--source-stdin", action="store_true", help="read the URL from stdin")
+
+    ac = sub.add_parser("app-config", help="print the application config (credentials masked)")
+    ac.add_argument("--root", required=True)
+
     sub.add_parser("info", help="runtime version and environment")
 
     args = p.parse_args(argv)
@@ -109,12 +123,60 @@ def main(argv: list[str] | None = None) -> int:
                 fps_limit=args.fps_limit,
                 heartbeat_s=args.heartbeat_s,
             )
+        if args.cmd == "liveview":
+            from .liveview import run_liveview
+
+            return run_liveview(Path(args.root), port=args.port, bind=args.bind)
+        if args.cmd == "probe":
+            return _emit(_probe(args))
+        if args.cmd == "app-config":
+            from . import appcfg
+
+            cfg = appcfg.load(Path(args.root))
+            return _emit(
+                {
+                    "path": str(appcfg.app_config_path(Path(args.root))),
+                    "exists": appcfg.app_config_path(Path(args.root)).is_file(),
+                    "config": appcfg.masked(cfg),
+                    "problems": appcfg.validate(cfg),
+                    "live_dir": str(appcfg.live_dir(Path(args.root))),
+                }
+            )
         if args.cmd == "info":
             return _emit(_info())
     except Exception as exc:  # noqa: BLE001 - report as JSON, non-zero exit
         traceback.print_exc(file=sys.stderr)
         return _emit({"error": {"type": type(exc).__name__, "message": str(exc)}}, 1)
     return 2
+
+
+def _probe(args) -> dict:
+    from . import appcfg, stream
+
+    root = Path(args.root)
+    cfg = appcfg.load(root)
+    inf = cfg["inference"]
+    if args.source_stdin:
+        sources = [{"name": "stdin", "url": sys.stdin.readline().strip()}]
+    elif args.source:
+        sources = [{"name": "arg", "url": args.source}]
+    else:
+        sources = cfg["sources"]
+    if not sources:
+        return {"sources": [], "ok": False, "error": "no source configured (app source set)"}
+    results = []
+    for i, src in enumerate(sources):
+        res = stream.probe(
+            src["url"],
+            width=int(inf["width"]),
+            height=int(inf["height"]),
+            backend=str(inf.get("backend", "auto")),
+            seconds=float(args.seconds),
+        )
+        res["name"] = src.get("name") or f"cam{i}"
+        res["url"] = appcfg.mask_url(src["url"])
+        results.append(res)
+    return {"ok": all(r["ok"] for r in results), "sources": results}
 
 
 def _info() -> dict:
@@ -131,6 +193,12 @@ def _info() -> dict:
             info[mod] = getattr(m, "__version__", "present")
         except Exception as exc:  # noqa: BLE001
             info[mod] = f"missing ({type(exc).__name__})"
+    try:
+        from . import stream
+
+        info["decode_backend"] = stream.pick_backend("auto")
+    except Exception as exc:  # noqa: BLE001
+        info["decode_backend"] = f"unavailable ({exc})"
     try:
         from . import cudart
 

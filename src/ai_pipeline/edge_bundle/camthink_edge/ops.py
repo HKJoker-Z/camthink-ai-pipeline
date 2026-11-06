@@ -70,6 +70,15 @@ def _engine_sidecar(engine: Path) -> Path:
     return Path(str(engine) + ".json")
 
 
+def _trt_version_tuple(version: str) -> tuple[int, ...]:
+    parts = []
+    for p in version.split("."):
+        if not p.isdigit():
+            break
+        parts.append(int(p))
+    return tuple(parts) or (0,)
+
+
 def find_reusable_engine(
     scan_dir: Path, *, onnx_sha256: str, precision: str, tensorrt: str
 ) -> Path | None:
@@ -147,12 +156,16 @@ def build(
 
     tmp = Path(str(engine) + ".building")
     tmp.unlink(missing_ok=True)
+    # TensorRT >= 8.6 spells "build only" --skipInference; 8.5 (JetPack 5) uses --buildOnly.
+    build_only = (
+        "--skipInference" if _trt_version_tuple(trt.__version__) >= (8, 6) else "--buildOnly"
+    )
     cmd = [
         trtexec,
         f"--onnx={onnx}",
         f"--saveEngine={tmp}",
         f"--memPoolSize=workspace:{workspace_mb}",
-        "--skipInference",
+        build_only,
     ]
     if precision == "fp16":
         cmd.append("--fp16")
@@ -219,9 +232,11 @@ class Detector:
         if tuple(got[-2:]) != (size, size):
             raise RuntimeError(f"engine input {got} does not match runtime.json input_size {size}")
 
-    def detect(self, img_rgb: np.ndarray) -> tuple[list[dict[str, Any]], dict[str, float]]:
+    def detect(
+        self, img: np.ndarray, *, bgr: bool = False
+    ) -> tuple[list[dict[str, Any]], dict[str, float]]:
         t0 = time.perf_counter()
-        x, lb = yolo.preprocess(img_rgb, self.cfg)
+        x, lb = yolo.preprocess(img, self.cfg, bgr=bgr)
         t1 = time.perf_counter()
         out = self.engine.infer(x)
         t2 = time.perf_counter()
@@ -537,9 +552,21 @@ def serve(root: Path, *, source: str | None, fps_limit: float, heartbeat_s: floa
     """Long-running inference loop; writes ``<root>/service/status.json`` as a heartbeat.
 
     ``source``: RTSP/video URL (needs OpenCV) or None to loop over the deployment's sample
-    images. Reloads when ``current`` changes (the target restarts the service anyway).
+    images. When ``<root>/service/app.json`` lists sources, the RTSP monitoring mode
+    (:mod:`monitor`) runs instead and ``source`` is ignored.
     """
     root = Path(root)
+    from . import appcfg
+
+    app_cfg = appcfg.load(root)
+    if app_cfg.get("sources"):
+        # RTSP monitoring mode (M9): sources configured by `ai-pipeline app source set`.
+        problems = appcfg.validate(app_cfg)
+        if problems:
+            raise ValueError(f"invalid {appcfg.app_config_path(root)}: {'; '.join(problems)}")
+        from .monitor import run_monitor
+
+        return run_monitor(root, app_cfg, heartbeat_s=heartbeat_s)
     status_path = root / "service" / "status.json"
     status_path.parent.mkdir(parents=True, exist_ok=True)
     stop = {"flag": False}

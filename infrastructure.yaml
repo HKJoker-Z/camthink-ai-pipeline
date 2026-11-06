@@ -33,3 +33,9 @@ deployment_targets:
     workspace_mb: 1024
     build_timeout_s: 1800
     fps_limit: 5
+    # Live view (M9). The camera URL itself is NOT configured here: `ai-pipeline app source
+    # set <project>` stores it on the device only (service/app.json, mode 0600).
+    liveview_service_name: camthink-ai-liveview   # second systemd --user unit; null = none
+    liveview_port: 8080                           # seeds the device app.json on first use
+    # liveview_host: 192.168.5.222                # LAN address for browsers; default = ssh -G HostName
+    device_label: "NG4511 lab"                    # shown on the live-view page

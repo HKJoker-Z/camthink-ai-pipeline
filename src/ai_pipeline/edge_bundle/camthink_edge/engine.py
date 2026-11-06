@@ -21,6 +21,20 @@ class _Tensor:
     host: np.ndarray
 
 
+def _np_dtype(trt, dt) -> np.dtype:
+    """TensorRT dtype -> numpy dtype without ``trt.nptype`` (TRT 8.5's uses the removed ``np.bool``)."""
+    table = {
+        trt.float32: np.float32,
+        trt.float16: np.float16,
+        trt.int8: np.int8,
+        trt.int32: np.int32,
+    }
+    for name, npt in (("bool", np.bool_), ("int64", np.int64), ("uint8", np.uint8)):
+        if hasattr(trt, name):
+            table[getattr(trt, name)] = npt
+    return np.dtype(table[dt])
+
+
 class TrtEngine:
     """Loads a serialized engine and runs single-batch inference.
 
@@ -56,7 +70,7 @@ class TrtEngine:
                 shape = tuple(input_shape)
             if not is_input:
                 shape = tuple(self.context.get_tensor_shape(name))
-            dtype = np.dtype(trt.nptype(self.engine.get_tensor_dtype(name)))
+            dtype = _np_dtype(trt, self.engine.get_tensor_dtype(name))
             nbytes = int(np.prod(shape)) * dtype.itemsize
             host = np.empty(shape, dtype=dtype)
             dev = cudart.malloc(nbytes)

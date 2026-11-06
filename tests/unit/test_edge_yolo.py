@@ -50,6 +50,15 @@ def test_letterbox_geometry_and_preprocess():
     assert x.shape == (1, 3, 64, 64) and x.dtype == np.float32
     assert x.max() <= 1.0 and x[0, 0, 32, 32] == pytest.approx(200 / 255)
     assert lb2 == lb
+    assert x.flags["C_CONTIGUOUS"]
+    # a BGR frame with the same content lands in the same network input
+    xb, _ = yolo.preprocess(np.ascontiguousarray(img[:, :, ::-1]), CFG, bgr=True)
+    assert np.array_equal(xb, x)
+    # bit-exact with the straightforward formulation
+    ref = np.ascontiguousarray(
+        np.transpose(canvas.astype(np.float32) * (1 / 255.0), (2, 0, 1))[None]
+    )
+    assert np.array_equal(x, ref)
 
 
 def test_stretch_mode_inverts_with_separate_gains():
@@ -249,3 +258,14 @@ def test_build_reuses_identical_engine_without_trtexec(tmp_path, monkeypatch):
             timeout_s=10,
             reuse_scan=deployments,
         )
+
+
+def test_preprocess_accepts_bgrx_frames_from_the_hardware_decoder():
+    img = np.zeros((30, 60, 3), dtype=np.uint8)
+    img[:, :, 0] = 200
+    img[:, :, 2] = 50
+    bgrx = np.concatenate([img[:, :, ::-1], np.full((30, 60, 1), 255, np.uint8)], axis=2)
+    x_rgb, lb = yolo.preprocess(img, CFG)
+    x_bgrx, lb2 = yolo.preprocess(np.ascontiguousarray(bgrx), CFG, bgr=True)
+    assert x_bgrx.shape == (1, 3, 64, 64) and lb2 == lb
+    assert np.array_equal(x_bgrx, x_rgb)

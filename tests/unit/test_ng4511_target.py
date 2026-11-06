@@ -44,20 +44,31 @@ class FakeSsh:
         self.commands: list[str] = []
         self.uploads: list[tuple[list[str], str]] = []
         self.unit_installed = False
+        self.units: dict[str, str] = {}  # unit file name -> contents
+        self.app_json: str | None = None  # contents of service/app.json
+        self.app_json_tmp: str | None = None
+        self.liveview_state = "inactive"
+        self.liveview_enabled = "disabled"
+        self.live_stats: str | None = None  # contents of /dev/shm/.../stats.json
+        self.stdin_seen: list[str] = []
 
     # -- SshHost API -------------------------------------------------------------------
 
-    def run(self, command: str, *, timeout: float = 120, check: bool = True) -> CommandResult:
+    def run(
+        self, command: str, *, timeout: float = 120, check: bool = True, stdin: str | None = None
+    ) -> CommandResult:
         self.commands.append(command)
-        out, rc = self._handle(command)
+        if stdin is not None:
+            self.stdin_seen.append(stdin)
+        out, rc = self._handle(command, stdin=stdin)
         if check and rc != 0:
             raise RemoteError(
                 f"exit {rc}", code="REMOTE_COMMAND_FAILED", details={"command": command}
             )
         return CommandResult(rc, out, "")
 
-    def run_json(self, command: str, *, timeout: float = 120) -> dict:
-        res = self.run(command, timeout=timeout, check=False)
+    def run_json(self, command: str, *, timeout: float = 120, stdin: str | None = None) -> dict:
+        res = self.run(command, timeout=timeout, check=False, stdin=stdin)
         payload = json.loads(res.stdout.strip().splitlines()[-1])
         if "error" in payload:
             raise RemoteError(
@@ -77,15 +88,43 @@ class FakeSsh:
             self.deployments.setdefault(m.group(1), set()).update(Path(f).name for f in files)
         if remote.endswith(".service"):
             self.unit_installed = True
+            self.units[remote.rsplit("/", 1)[1]] = Path(files[0]).read_text()
+        if remote.endswith("service/app.json.tmp"):
+            self.app_json_tmp = Path(files[0]).read_text()
 
     def download(self, *a, **k):  # pragma: no cover
         raise NotImplementedError
 
+    def resolved_hostname(self) -> str | None:
+        return "192.168.5.222"
+
     # -- command handling ----------------------------------------------------------------------
 
-    def _handle(self, c: str) -> tuple[str, int]:
+    def _handle(self, c: str, *, stdin: str | None = None) -> tuple[str, int]:
         if c == "echo $HOME":
             return HOME + "\n", 0
+        # -- app config / live view (M9) ------------------------------------------------
+        if c.startswith("cat ") and "service/app.json" in c:
+            return (self.app_json, 0) if self.app_json else ("", 0)
+        if c.startswith("chmod 600 ") and "app.json.tmp" in c:
+            self.app_json, self.app_json_tmp = self.app_json_tmp, None
+            return "", 0
+        if c.startswith("cat ") and "/dev/shm/" in c:
+            return (self.live_stats, 0) if self.live_stats else ("", 0)
+        if "__EN__" in c:
+            return f"{self.liveview_state}\n__EN__\n{self.liveview_enabled}\n", 0
+        if "camthink-ai-liveview" in c and "systemctl --user" in c:
+            for part in c.replace(">/dev/null 2>&1", "").split(";"):
+                action = part.split("systemctl --user ")[1].split()[0]
+                if action in ("start", "restart"):
+                    self.liveview_state = "active"
+                elif action == "stop":
+                    self.liveview_state = "inactive"
+                elif action == "enable":
+                    self.liveview_enabled = "enabled"
+                elif action == "disable":
+                    self.liveview_enabled = "disabled"
+            return "", 0
         if "grep '^VERSION'" in c:
             return (f'VERSION = "{self.runtime_version}"\n', 0) if self.runtime_version else ("", 1)
         if c.startswith("echo machine="):
@@ -96,7 +135,7 @@ class FakeSsh:
                 0,
             )
         if "-m camthink_edge" in c:
-            return self._edge(c)
+            return self._edge(c, stdin)
         # -- service control ------------------------------------------------------------
         if "__STATE__" in c:  # service_status(): one composed round trip
             cur = f"deployments/{self.current}" if self.current else ""
@@ -170,9 +209,30 @@ class FakeSsh:
             return "", 0
         raise AssertionError(f"unexpected command: {c}")
 
-    def _edge(self, c: str) -> tuple[str, int]:
+    def _edge(self, c: str, stdin: str | None = None) -> tuple[str, int]:
         args = shlex.split(c.split("-m camthink_edge ", 1)[1])
         cmd = args[0]
+        if cmd == "probe":
+            if "--source-stdin" in args:
+                urls = [(stdin or "").strip()]
+            else:
+                urls = [s["url"] for s in json.loads(self.app_json or "{}").get("sources", [])]
+            return json.dumps(
+                {
+                    "ok": all("bad" not in u for u in urls) and bool(urls),
+                    "sources": [
+                        {
+                            "name": "cam0",
+                            "url": u,
+                            "ok": "bad" not in u,
+                            "frames": 0 if "bad" in u else 120,
+                            "decode_fps": 25.0,
+                            "backend": "cv2gst",
+                        }
+                        for u in urls
+                    ],
+                }
+            ) + "\n", 0
         if cmd == "info":
             return json.dumps(
                 {
@@ -512,3 +572,91 @@ def test_service_control_requires_service():
     with pytest.raises(OperationError) as ei:
         t.service_stop()
     assert ei.value.code == "TARGET_NO_SERVICE"
+
+
+def test_setup_installs_liveview_unit_without_enabling_it():
+    fake = FakeSsh()
+    t = _target(fake)
+    info = t.setup_runtime()
+    assert info["liveview"] == {
+        "name": "camthink-ai-liveview",
+        "unit": "~/.config/systemd/user/camthink-ai-liveview.service",
+        "port": 8080,
+        "enabled": False,
+    }
+    assert set(fake.units) == {"camthink-ai-inference.service", "camthink-ai-liveview.service"}
+    assert (
+        f"camthink_edge liveview --root {HOME}/camthink-ai"
+        in fake.units["camthink-ai-liveview.service"]
+    )
+    assert (
+        f"camthink_edge serve --root {HOME}/camthink-ai --fps-limit 5.0"
+        in fake.units["camthink-ai-inference.service"]
+    )
+    assert not any("enable camthink-ai-liveview" in c for c in fake.commands)
+    assert fake.liveview_state == "inactive"
+    # no live view configured: unit not installed
+    fake2 = FakeSsh()
+    info = _target(fake2, liveview_service_name=None).setup_runtime()
+    assert "liveview" not in info and set(fake2.units) == {"camthink-ai-inference.service"}
+
+
+def test_app_config_round_trip_never_puts_the_url_on_a_command_line():
+    fake = FakeSsh()
+    t = _target(fake)
+    assert t.app_config_read() is None
+    cfg = {"schema_version": 1, "sources": [{"name": "cam0", "url": "rtsp://u:pw@cam/x"}]}
+    t.app_config_write(cfg)
+    assert json.loads(fake.app_json) == cfg
+    assert not any("pw@" in c for c in fake.commands)
+    assert t.app_config_path == f"{HOME}/camthink-ai/service/app.json"
+    assert any(c.startswith("chmod 600 ") for c in fake.commands)
+    assert t.app_config_read() == cfg
+    fake.app_json = "{not json"
+    with pytest.raises(OperationError) as ei:
+        t.app_config_read()
+    assert ei.value.code == "APP_CONFIG_INVALID"
+
+
+def test_source_probe_uses_stdin_for_candidate_urls():
+    fake = FakeSsh()
+    t = _target(fake)
+    res = t.source_probe(seconds=2, url="rtsp://u:pw@cam/x")
+    assert res["ok"] and res["sources"][0]["url"] == "rtsp://u:pw@cam/x"
+    assert fake.stdin_seen == ["rtsp://u:pw@cam/x\n"]
+    assert not any("pw@" in c for c in fake.commands)
+    assert any("probe --root" in c and "--source-stdin" in c for c in fake.commands)
+    fake.app_json = json.dumps({"sources": [{"name": "cam0", "url": "rtsp://bad"}]})
+    res = t.source_probe(seconds=2)
+    assert res["ok"] is False
+
+
+def test_liveview_control_and_url():
+    fake = FakeSsh()
+    t = _target(fake)
+    assert t.liveview_url() == "http://192.168.5.222:8080/"
+    assert _target(fake, liveview_host="jetson.lan", liveview_port=9000).liveview_url() == (
+        "http://jetson.lan:9000/"
+    )
+    st = t.liveview_status()
+    assert st["systemd_state"] == "inactive" and st["enabled"] == "disabled"
+    res = t.liveview_start()
+    assert res == {"previous_state": "inactive", "state": "active"}
+    assert fake.liveview_enabled == "enabled"
+    # the inference service was never touched
+    assert not any(
+        "camthink-ai-inference" in c and ("restart" in c or "stop" in c) for c in fake.commands
+    )
+    assert fake.service_state == "inactive"
+    res = t.liveview_stop()
+    assert res["state"] == "inactive" and fake.liveview_enabled == "disabled"
+    assert t.liveview_restart()["state"] == "active"
+    assert t.live_stats() is None
+    fake.live_stats = json.dumps({"state": "running", "fps": 9.5})
+    assert t.live_stats() == {"state": "running", "fps": 9.5}
+    assert t.live_dir == "/dev/shm/camthink-ai-home_julian_camthink-ai"
+    nolv = _target(FakeSsh(), liveview_service_name=None)
+    assert nolv.liveview_status()["service"] is None
+    with pytest.raises(OperationError) as ei:
+        nolv.liveview_start()
+    assert ei.value.code == "TARGET_NO_LIVEVIEW"

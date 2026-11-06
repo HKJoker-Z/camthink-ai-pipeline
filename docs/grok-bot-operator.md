@@ -12,10 +12,10 @@ is what a human configures once. Everything below maps onto the existing CLI
 | | |
 |---|---|
 | Name | `camthink-ai-pipeline-operator` |
-| Use when | the user asks to create or configure a detection project, upload/import data/labels, build a dataset, train, evaluate, select, export, deploy to an edge device, check what runs on a device, stop/start/restart the edge application, roll back, or report pipeline state |
-| Tool needed | one shell/SSH tool that runs `ssh ai-server <args>` and returns stdout, stderr and the exit code; for dataset upload the same tool must be able to feed a local file to the command's stdin (section 7.0) |
+| Use when | the user asks to create or configure a detection project, upload/import data/labels, build a dataset, train, evaluate, select, export, deploy to an edge device, check what runs on a device, stop/start/restart the edge application, connect an RTSP camera, start/stop live monitoring, get the live-view webpage URL, read detection FPS / latency / device load, change the confidence threshold, roll back, or report pipeline state |
+| Tool needed | one shell/SSH tool that runs `ssh ai-server <args>` and returns stdout, stderr and the exit code; for dataset upload and for camera URLs the same tool must be able to feed data to the command's stdin (sections 7.0 and 7.5) |
 | Scope | V1: YOLO object detection (`task_type: object_detection`), targets `ng4511-lab` (NG4511) and other configured targets; no face recognition, no new task types |
-| Hard rules | always JSON; decide from `status`/`error.code`/exit code, never from log text; one active deployment per device; the device's `target status` beats any project pointer; ask a human before anything in section 6 |
+| Hard rules | always JSON; decide from `status`/`error.code`/exit code, never from log text; one active deployment per device; the device's `target status` beats any project pointer; camera URLs with passwords go to stdin only and are never repeated back; a live-view URL is only "working" when the envelope says `url_verified: true`; ask a human before anything in section 6 |
 
 ---
 
@@ -120,6 +120,10 @@ Every command is `ssh ai-server <command>` (forced key) and returns the JSON env
 | target | `target status [<p>] [--target t]` · `target verify <p> [--target t]` · `target setup <p> [--target t]` | status = what every device (or `<p>`'s device) actually runs, read-only, exit 0 even when stopped/unreachable (section 5); verify is read-only; setup installs the runtime + user service (approval) |
 | deploy | `deploy start <p> [<mv>] [--export exp] [--target t]` · `deploy status <p> [<dep>] [--full]` · `deploy list <p>` · `deploy infer <p> <image>… [--deployment dep] [--target t]` | start is synchronous and long (approval; section 4.2) |
 | edge service | `service status <p>` (alias of `target status <p>`) · `service stop <p> [--target t]` · `service start <p> [--target t] [--switch]` · `service restart <p> [--target t]` | control the systemd service of the *installed* deployment: no staging, no TensorRT build, pointers untouched (section 5.2); stop/restart/`--switch` = approval |
+| camera | `app source set <p> [--name cam0] [--add] [--no-test] [--seconds s] [--restart]  < url` · `app source show <p>` · `app source test <p> [--stdin] [--seconds s]` · `app source clear <p>` | the RTSP URL (with credentials) is read from **stdin**, never given as an argument; stored only in the device's `service/app.json` (0600), masked as `rtsp://***@host/path` everywhere else; `set` probes the camera first (`SOURCE_UNREACHABLE` keeps the old config); applying a new source to a *running* service needs `service restart <p>` (or `--restart`, approval) |
+| settings | `app configure <p> [--inference-fps f] [--confidence c\|default] [--width w] [--height h] [--display-fps f] [--quality q] [--port n] [--backend auto\|cv2gst\|cv2] [--latency-ms n]` | fps / confidence / display-fps / quality are picked up live by the running service (`hot_reloaded`); the rest set `restart_required.inference` or `.liveview` and are applied only by the restart you run next |
+| live view | `app liveview start <p>` · `app liveview stop <p>` · `app liveview restart <p>` · `app liveview url <p>` · `app liveview status <p>` (alias of `app status`) | the webpage process only: stop leaves detection running, start never rebuilds/redeploys/restarts inference; start/restart verify the URL from the AI server (`url_check.verified`) |
+| monitoring | `app status <p>` · `app metrics <p>` | status = ownership, inference state/mode, camera connectivity (per channel: connected, decode fps, reconnects, error), live-view state + URL, masked config, pending restarts; metrics = detection FPS, input FPS, inference/e2e latency p50/p95, CPU, GPU, RAM, temperatures, power, skipped frames, last inference age, viewers — `null` = unavailable (never estimated); both refuse to show another project's device (`DEVICE_OCCUPIED` / `ownership.matches: false`) |
 | recovery | `rollback <p> [--to dep]` · `health <p> [--target t]` | rollback = approval; health is read-only |
 | helpers (wrapper only) | `connection-test` · `detach <command…>` · `detach-status <handle>` · `upload <p> <archive>` | sections 1.4, 4.2 and 7.0 |
 
@@ -401,6 +405,44 @@ project-centric view with a verdict exit code:
 
 ---
 
+### 5.4 Camera, live view and metrics (M9) — two processes, controlled separately
+
+Each `camthink_ng4511` device runs **two** systemd user services for the installed deployment:
+
+| Process | Unit (default) | What it does | Controlled by | Stopping it means |
+|---|---|---|---|---|
+| inference service | `camthink-ai-inference` | decodes the camera (`service/app.json` sources, hardware decoder), runs the TensorRT engine of `current`, publishes annotated frames + 1 Hz stats to `/dev/shm/camthink-ai-<root>/` | `service stop\|start\|restart <p>` (M7) | **detection stops**; the webpage shows "inference stopped" |
+| live-view server | `camthink-ai-liveview` | serves `http://<device>:<port>/` (page, MJPEG `/stream.mjpg`, `/snapshot.jpg`, `/api/status`, `/api/detections`, `/healthz`) from that shared memory | `app liveview start\|stop\|restart <p>` | **only the webpage goes away**; detection continues |
+
+Consequences the bot must state correctly:
+
+- "Stop the camera monitoring but keep the deployed model" = `service stop <p>` (approval; the
+  model, engine, pointers and the camera config stay; `service start <p>` resumes). "Stop the
+  webpage" = `app liveview stop <p>` (no approval; detection keeps running).
+- Browsers never touch the camera or inference: one decode + one inference per camera no matter
+  how many viewers; JPEG encoding for the page happens only while someone is watching, at
+  `liveview.display_fps` at most.
+- `app liveview start` never trains, exports, rebuilds a TensorRT engine or replaces the model.
+  It refuses with `NO_SOURCE` until a camera is configured and with `DEVICE_OCCUPIED` when the
+  device runs another project — a request for project A never shows project B's detections.
+- A new source / decode size / backend / latency applies to a **running** service only after
+  `service restart <p>` (interrupts detection for a few seconds → approval). FPS, confidence,
+  display FPS and JPEG quality apply within ~2 s without a restart (`hot_reloaded` in the
+  envelope). `--port`/`--bind` need `app liveview restart <p>` (no approval).
+- The URL in `app liveview start` / `app status` / `app liveview url` is `http://<LAN address>:
+  <port>/` (address from `liveview_host` or the SSH alias's HostName). The envelope's
+  `url_verified` / `url_check` say whether it answered **from the AI server**. Report it as
+  reachable only then, and say that a browser on another LAN segment may still need routing.
+- Camera credentials: pipe the URL to stdin (`"rtsp://user:pw@cam/stream" | ssh ai-server app
+  source set <p>`); never put it in the argument list, never quote it back; everything the CLI
+  returns is masked. On the device it exists only in `~/camthink-ai/service/app.json` (0600).
+- Camera trouble: `app status <p>` → `camera.state` `connected | degraded | disconnected |
+  unconfigured | unknown` with per-channel `reconnects`, `disconnected_for_s`, `error`. The
+  service reconnects by itself every 2 s; a camera that comes back needs no action. If the URL
+  or credentials are wrong, `app source test <p> --stdin < newurl` then `app source set <p>`.
+
+---
+
 ## 6. Approval policy (the CLI does not enforce it — the bot must)
 
 Ask the human, state the exact command and the expected effect, and wait for an explicit
@@ -414,7 +456,9 @@ Ask the human, state the exact command and the expected effect, and wait for an 
 | `service start <p> --switch` | replaces the application another project is running on the device (no rebuild, but the other project stops serving) |
 | `service start <p>` when the service is `failed`/`inactive` **without** a stop marker | the service died unexpectedly; starting it hides the cause — report first |
 | `rollback <p>` / `rollback <p> --to <dep>` | changes what runs on the device; `--to` after `ROLLBACK_FAILED` acts on an unknown device state |
-| `target setup <p>` | installs/updates the runtime bundle and the user service on the device |
+| `target setup <p>` | installs/updates the runtime bundle and the user services on the device |
+| `app source set <p> --restart`, and the `service restart <p>` that applies a new source / `--width` / `--height` / `--backend` / `--latency-ms` to a **running** service | interrupts detection for a few seconds (same as any restart) |
+| `app source set <p>` / `app source clear <p>` / `app configure <p>` on a device whose service is **running** another user's live monitoring | the stored config changes what the next restart does; hot settings (fps, confidence, display fps, quality) change the live behaviour immediately |
 | `project configure <p> …` on a project that has an **active deployment** or a run in progress, and any change of `dataset.classes` / `--auto-label-map` on a project that already has label sets or datasets | changes the ground rules of existing artifacts (the pipeline keeps old versions, but the next build/train will differ) |
 | `export start … --rerun`, re-running `evaluate run` on an already ACCEPTED/REJECTED model | changes verdicts/artifacts that later stages depend on |
 | `run cancel` of a run the bot did not start | someone else's work |
@@ -428,9 +472,12 @@ name, with any configuration options), `project configure` on a project that has
 and no run in progress, `project show`/`validate`, `upload` to a new name, `data import`,
 `label import`, `label auto`, `dataset validate`/`build`, `train start`, `evaluate run` on a
 TRAINED model, `model select`, `export start` (without `--rerun`), `deploy infer`, `run status`,
-`detach-status`, and **`service start <p>` of an application that `target status` shows as
-`stopped` (stop marker present) and whose device still has this project's deployment as
-`current`** — that is resuming the installed application, no project switch, no rebuild.
+`detach-status`, `app status`, `app metrics`, `app source show`, `app source test`,
+`app liveview url`, `app liveview start` / `stop` / `restart` (the webpage only; inference is not
+touched), `app source set` on a device whose service is stopped or not yet configured, and
+**`service start <p>` of an application that `target status` shows as `stopped` (stop marker
+present) and whose device still has this project's deployment as `current`** — that is resuming
+the installed application, no project switch, no rebuild.
 
 When approval is given, quote the approved command back and run exactly that (no changed
 arguments). Never chain an approved `deploy start` into a `rollback` on your own initiative:
@@ -550,6 +597,52 @@ unasked, never pick another project's model to satisfy the request.
 
 ---
 
+### 7.5 Camera live view: "build a cat/dog model, deploy it to the NG4511, connect my RTSP camera, start live monitoring and give me a webpage" (M9)
+
+```
+# 1-3  project, data, training (sections 7.0 / 7.1)
+project create cat_dog --classes cat,dog …  → upload / data import / label import / dataset build
+train start cat_dog --wait            → evaluate run cat_dog mv-001 --wait → model select cat_dog
+# 4  export + deploy (approval for deploy start; section 4.2)
+export start cat_dog --wait           → [approval] detach deploy start cat_dog
+# 5  confirm what the device runs — the device wins over any pointer
+target status cat_dog                 → current == cat_dog-dep-NNN, service.state running
+# 6  camera (URL on stdin, never as an argument; probes before saving)
+"rtsp://user:pw@192.168.5.78:554/main" | ssh ai-server app source set cat_dog
+                                      → result.probe.sources[0].ok, result.restart_required.inference
+# 7  apply to the running service (interrupts detection for seconds → approval) or, if the
+#    service was stopped, just start it
+[approval] service restart cat_dog    (or: service start cat_dog)
+# 8  webpage
+app liveview start cat_dog            → result.url, result.liveview.url_check.verified
+# 9  verify it is really this model on this camera
+app status cat_dog                    → ownership.matches true, inference.mode rtsp, camera.state connected
+app metrics cat_dog                   → channels[0].detection_fps, inference_ms_p50, camera_connected, system.*
+# 10 report: URL (+ whether verified from the AI server), project / model_version / deployment,
+#    detection fps vs target, camera state, and the exact command to stop each part
+```
+
+What to answer, and with which command (all return the JSON envelope; `<p>` = project):
+
+| User says | Command | Report from the envelope |
+|---|---|---|
+| "Start the live view for cat_dog." | `app status cat_dog` → if `config.sources` empty ask for the camera URL (stdin) → `app liveview start cat_dog` | `result.url`, `liveview.url_check.verified`, `warnings` (e.g. inference not running) |
+| "Stop the camera monitoring but keep the deployed model." | [approval] `service stop cat_dog` | `service.state_before → state`; model/engine/config untouched; `service start cat_dog` resumes |
+| "Stop the webpage." | `app liveview stop cat_dog` | `liveview.state stopped`, `inference.state running` (detection continues) |
+| "Show the live-view URL." | `app liveview url cat_dog` | `url`, `url_verified`; `null` + `app liveview start` when the server is not running |
+| "What is the detection FPS on NG4511?" | `app metrics cat_dog` (or `target status --target ng4511-lab` to learn which project runs there) | `channels[0].detection_fps` vs `target_fps`, `input_fps`, `inference_ms_p50`; `available: false` + `reason` when the service is not running — never guess a number |
+| "Check why the camera is disconnected." | `app status cat_dog` → `app source test cat_dog` | `camera.channels[0].error`, `reconnects`, `disconnected_for_s`; probe `frames`/`error`; then ask for a corrected URL if `cannot open source` persists |
+| "Change the detection confidence threshold to 0.5." | `app configure cat_dog --confidence 0.5` | `hot_reloaded` contains `inference.confidence` (no restart) — or `restart_required` + the command to run |
+| "Use 640×360 for inference" / "decode at 15 fps" | `app configure cat_dog --width 640 --height 360` / `--inference-fps 15` | width/height: `restart_required.inference true` → [approval] `service restart`; fps: live |
+| "Which project is live on the NG4511?" | `target status --target ng4511-lab` | `current`, `project`, `service.state`, `heartbeat.mode` (`rtsp` = camera monitoring) |
+
+Multiple cameras: `app source set <p> --name cam1 --add < url` adds a channel (`inference.fps`
+applies per channel; the page and `app metrics` list every channel). The NG4511 was verified with
+**one** 1080p H.265 stream at 10 inference FPS (section 8.3); do not promise more channels than
+you have measured on that device.
+
+---
+
 ## 8. Tested on 2026-11-05 (AI server, project `v1_person`, through `scripts/grok_bot/aip`)
 
 | Step | Result |
@@ -626,8 +719,39 @@ including the new `tests/unit/test_cli_m7.py`, NG4511 service-control simulation
 | `health` exit 1 `SERVICE_STOPPED` | expected after `service stop`; `service start <p>` resumes |
 | `target status` shows `service.state: inactive` with `stopped: null` | the service died without a pipeline stop → approval item (`service restart`), include `health_reason` |
 | `target status` `reachable: false` | device off or unreachable from the AI server; nothing can be concluded, nothing changed |
+| `app source set` exit 2 `APP_SOURCE_STDIN_REQUIRED` / `APP_SOURCE_EMPTY` | the URL was not piped to stdin (PowerShell: `"rtsp://…" \| ssh ai-server app source set <p>` or `cmd /c "ssh ai-server app source set <p> < url.txt"`) |
+| `app source set` exit 1 `SOURCE_UNREACHABLE` | the device decoded no frame in the probe window; `error.details.probe` has `error`/`frames`; old config kept. Check address, credentials, camera reachability from the device; `--seconds 20` for slow keyframes; `--no-test` stores it anyway |
+| `app liveview start` exit 3 `NO_SOURCE` | configure a camera first (`app source set`) |
+| `app *` exit 3 `DEVICE_OCCUPIED` | the device runs another project; same rule as `service *` |
+| `app liveview start` ok but `url_check.verified false` | the server runs on the device but the AI server could not reach the port; report the URL as **unverified** with `url_check.error` |
+| `app status` → `camera.state disconnected`, `error "cannot open source"` | wrong URL/credentials or camera unreachable from the device; `"stream ended"` / `"no frames received"` = the camera dropped the session; the service retries every 2 s |
+| `app metrics` → `available: false` | service not running or not in camera mode (`reason`); never report numbers from an earlier call as current |
+| `app configure` → `restart_required.inference true` | nothing changed on the running service yet: run (with approval) `service restart <p>` |
 
 ---
+
+### 8.3 M9 acceptance (2026-11-05, same server; isolated test instance on the NG4511)
+
+To respect the running `v1_person` production service, every test ran against a second
+instance on the same NG4511 (`install_root ~/camthink-ai-m9`, units `camthink-ai-inference-m9`
+/ `camthink-ai-liveview-m9`, port 8081, `current` → the production `v1_person-dep-003` engine
+via symlink, no rebuild). The production unit was never stopped or restarted (its pid stayed
+10373 throughout). The user's unrelated `camthink-live` demo (PyTorch, same camera, ~110 % of a
+core) and `camthink_detect_web` (:8766) also kept running and are included in every system-level
+number below.
+
+| Test | Result |
+|---|---|
+| A — camera probe (`app source test --stdin`, URL on stdin) | `cv2gst` (OpenCV + GStreamer `nvv4l2decoder`), 1280×720 BGRx, 25 fps; first frame after 0.5–4.2 s depending on the H.265 keyframe (hence the 10 s default probe) |
+| A — `app source set` | config written to `~/camthink-ai-m9/service/app.json` (0600), masked in the envelope; password absent from every CLI output, journal line, `/dev/shm` document, process argument list (`ps`) and the page |
+| A — inference on real frames | `service start` → heartbeat `mode: rtsp`; after 20 s: detection 9.88 fps (target 10), input 25 fps, inference p50 21 ms / p95 43 ms, decode→result p50 48 ms, `person` detected, boxes drawn on `/snapshot.jpg` (verified visually) |
+| A — hot reload | `app configure --confidence 0.1 --inference-fps 8` → page and stats showed 0.1 / 8 fps within 4 s, `restart_required` false, no restart |
+| A — camera failure / recovery | wrong stream path + `--restart`: within 25 s `camera.state disconnected`, `reconnects 12`, `error "cannot open source"`, MJPEG served a "camera disconnected: cannot open source" placeholder; correct URL + `--restart`: `connected`, 25 fps, 9.9 detection fps. A physical unplug was **not** performed (no root for iptables on the device) — the 10 s RTSP TCP timeout + 2 s reconnect loop cover it, please confirm with a real cable pull |
+| B — URL | `app liveview start` → `http://192.168.5.222:8081/`, `url_check.verified true` (HTTP 200 from the AI server across the 192.168.2.x → 192.168.5.x route); page rendered in headless Firefox on the AI server (video, badges, model / performance / trends / device / camera cards). **Not opened from the Windows 11 PC** (no access from this session); it sits on 192.168.5.x like the device, so no proxy is expected |
+| B — streaming | `/stream.mjpg`: 68 frames / 8 s (8.5 fps at `display_fps 10`, ~770 KB/s at quality 70); `viewers` 1 → publishing; 4 s after the client left: `viewers 0`, `publishing false` |
+| C — restricted path (`SSH_ORIGINAL_COMMAND` through `scripts/grok_bot/aip`) | `app source show/test(stdin)/configure`, `app liveview stop/status/start/restart`, `app status`, `app metrics`, `service restart`, `target status`: all exit 0 with envelopes; `app metrics cat_dog` on that device → exit 3 `NO_ACTIVE_DEPLOYMENT`; zero credential occurrences in any output |
+| D — overhead (tegrastats, 20 s means; 6 cores, 25 W mode) | baseline (production `v1_person` + `camthink-live`): CPU 21.1 %, RAM 4033 MB, 6.07 W · + M9 inference at 10 fps RTSP, live-view server up, no viewer: CPU 25.6 %, RAM 4360 MB, 6.65 W · + one MJPEG viewer: CPU 28.5 %, 6.72 W. Per process (`top`, 10 s): inference service 26 % of one core without viewer, 40 % with one viewer at 6 fps display (JPEG encode 17 ms p50 per 720p frame on CPU); live-view server 0–0.7 %; RSS 435 MB / 78 MB. Detection FPS and inference latency were unchanged by the viewer (9.86 fps, 21 ms p50). GPU % from tegrastats is dominated by the unrelated PyTorch demo (max 99 % in every condition, incl. baseline) and is reported, not interpreted |
+| unit tests | `ruff check`, `ruff format --check`, `pytest -m "not slow and not hardware"`: 232 passed |
 
 ## 9. Known limitations (V1)
 
@@ -652,5 +776,11 @@ including the new `tests/unit/test_cli_m7.py`, NG4511 service-control simulation
 - No deployment pruning; device directories accumulate (`target verify` → `staged`).
 - Device access is only from the AI server; if the AI server cannot reach a device (exit 4),
   the bot cannot either.
+- Live view (M9): verified on the NG4511 with one 1080p H.265 camera at 10 inference FPS; several
+  sources are configurable (`--add`) but were not measured on this device, and nothing here
+  says how many channels a device sustains. The page JPEGs are encoded on the CPU (~17 ms per
+  720p frame, only while watched); the live-view server has no authentication — it is meant
+  for the LAN, and the camera URL is never served. Reconnection was exercised with an
+  unreachable stream, not a physical unplug. The Orin NX (`JestonNX8`) was offline during M9.
 - Object detection only. Face recognition and other task types are out of scope for this
   integration.

@@ -75,9 +75,15 @@ project A on the device (A's `health` then reports `POINTER_MISMATCH` until A is
   deployments/<project>-dep-NNN/    model.onnx runtime.json deployment.json samples/
                                     model.engine model.engine.json (provenance) model.engine.build.log
   current -> deployments/<ref>      atomic (ln -sfn tmp && mv -T)
-  service/status.json               heartbeat: deployment, fps, frames, errors, last detections, rss
+  service/status.json               heartbeat: deployment, mode, fps, frames, errors, camera_connected, rss
+  service/app.json                  camera sources + inference/live-view settings (mode 0600) — the only
+                                    place camera credentials exist; written by `ai-pipeline app …` via scp
+  service/stopped.json              deliberate-stop marker (M7)
   tmp/infer-*/                      scratch for `deploy infer` (removed afterwards)
+/dev/shm/camthink-ai-<root>/        tmpfs: chN.jpg + chN.json (annotated frame, boxes), stats.json (1 Hz),
+                                    viewers.json — published by the inference service, read by the live view
 ~/.config/systemd/user/camthink-ai-inference.service   ExecStart python3 -m camthink_edge serve …
+~/.config/systemd/user/camthink-ai-liveview.service    ExecStart python3 -m camthink_edge liveview … (M9)
 ```
 
 The TensorRT engine is built on the device and recorded on the **Deployment**
@@ -101,7 +107,11 @@ ng4511-lab:
   trtexec: /usr/src/tensorrt/bin/trtexec
   workspace_mb: 1024                        # TensorRT builder workspace (device has ~5 GiB free)
   build_timeout_s: 1800
-  fps_limit: 5                              # service frame rate cap (keeps GPU/RAM headroom for the vendor service)
+  fps_limit: 5                              # sample-loop frame rate cap (camera mode uses app.json inference.fps)
+  liveview_service_name: camthink-ai-liveview   # M9 web server unit; null = none
+  liveview_port: 8080                       # seeds the device's app.json; the file is then the source of truth
+  # liveview_host: 192.168.5.222            # browser-facing LAN address; default: ssh -G HostName of ssh_host
+  device_label: "NG4511 lab"                # shown on the live-view page
 ```
 
 Project-side knobs (`project.yaml` → `deployment`): `precision`, `acceptance` (benchmark
@@ -199,15 +209,47 @@ No pipeline source was modified between the two runs; the second project differe
 its `project.yaml` (overlay). Deploying `v1_wildlife` superseded `v1_person` on the device as
 documented.
 
-## RTSP / camera input
+## Camera live view (M9)
 
-`serve --source <rtsp-url>` reads frames with OpenCV (GStreamer backend present on the device)
-and reconnects on stream errors; set `inference_source` (`NG4511_RTSP_URL` in `.env`) and run
-`target setup` to rewrite the user unit. **Status: not yet verified with a real camera** — the
-acceptance runs used the sample-image loop. A real-camera test is a separate pending item.
+When `<root>/service/app.json` lists sources (written by `ai-pipeline app source set`, URL on
+stdin), `camthink_edge serve` runs the **camera monitoring mode** instead of the sample loop:
+
+- `stream.FrameSource` decodes each RTSP source in-process with OpenCV: GStreamer
+  `rtspsrc (tcp) ! parsebin ! nvv4l2decoder ! nvvidconv ! BGRx WxH ! appsink drop=true`
+  (hardware decode, `backend: cv2gst`) when available, FFmpeg otherwise. Latest-frame semantics
+  (inference never queues behind the camera), reconnect loop every 2 s, 10 s RTSP TCP timeout.
+  The URL never appears on a command line — it is read from the file, so `ps` shows nothing.
+- `channels.ChannelSet` runs the deployment's TensorRT engine on each channel at
+  `inference.fps` (default 10) with `Detector.detect(frame, bgr=True)`; per-channel p50/p95 of
+  preprocess / inference / postprocess / decode→result, missed slots, detections by class.
+- `monitor.Publisher` writes annotated JPEGs to `/dev/shm/camthink-ai-<root>/chN.jpg` **only
+  while a viewer is present** (`viewers.json`, ≤ `liveview.display_fps`), detection metadata at
+  2 Hz always, `stats.json` every second (channels, model, `sysmon` CPU/GPU/RAM/temps/power via
+  `tegrastats`, publisher stats, masked config, `config_restart_required`), and the heartbeat
+  `service/status.json` the M7 health/status machinery already reads (`mode: rtsp`).
+- Hot reload: `inference.fps`, `inference.confidence`, `liveview.display_fps`, `liveview.quality`
+  are re-read from `app.json` every 2 s. `sources`, `width`, `height`, `backend`, `latency_ms`
+  need `service restart`; `liveview.port`/`bind` need `app liveview restart`.
+
+`camthink_edge liveview --root <root>` (unit `camthink-ai-liveview`, installed by `target setup`
+but only enabled by `app liveview start`) is a stdlib `ThreadingHTTPServer` that serves from that
+shared memory: `/` (single page: MJPEG video with boxes, class colours, camera + inference
+badges, model / performance / trends / device / camera cards, polling `/api/status` every
+second, "unavailable" for null metrics), `/stream.mjpg?ch=N[&fps=]`, `/snapshot.jpg?ch=N`,
+`/api/status` (= `/stats.json`), `/api/detections?ch=N`, `/healthz`. It never opens the camera,
+never runs inference, and renders a placeholder with the reason ("inference stopped", "camera
+disconnected: …") when there is no fresh frame. Stopping it does not affect detection.
+
+Verified on 2026-11-05 with the lab camera (1080p H.265, 25 fps) on an isolated second instance
+of the runtime on the NG4511 (`~/camthink-ai-m9`, port 8081, production `v1_person` untouched):
+hardware decode at 25 fps, 9.9 detection fps at target 10, inference p50 21 ms, camera-failure
+placeholder + automatic recovery, URL verified from the AI server; overhead ≈ +4.5 % system CPU
+for monitoring and +3 % with one viewer (details: grok-bot-operator.md §8.3). The legacy
+`serve --source <url>` / `inference_source` path still exists for compatibility but the camera
+URL should go through `app source set`, which keeps it off the unit file and out of git.
 
 ## Not done / deferred
 
-Deployment pruning (`deploy prune`, with protections) — storage is ample; INT8; real-camera
-RTSP verification; marking another project's deployment SUPERSEDED when a different project
-takes over the device.
+Deployment pruning (`deploy prune`, with protections) — storage is ample; INT8; marking another
+project's deployment SUPERSEDED when a different project takes over the device; hardware JPEG
+encoding (`nvjpegenc`) for the live view; multi-camera throughput figures for the NG4511.

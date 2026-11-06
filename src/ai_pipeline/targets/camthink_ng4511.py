@@ -12,12 +12,18 @@ Device layout::
                                     model.engine  model.engine.build.log  (built on device)
       current -> deployments/<dep>  atomic symlink swap
       service/status.json           heartbeat written by the inference service
+      service/app.json              RTSP sources + inference/live-view settings (mode 0600; the
+                                    only place camera credentials live)
       ~/.config/systemd/user/<service>.service   `python3 -m camthink_edge serve`
+      ~/.config/systemd/user/<liveview>.service  `python3 -m camthink_edge liveview`
+    /dev/shm/camthink-ai-<root>/    annotated JPEG + stats published by the inference service
+                                    and read by the live-view server (never persisted)
 """
 
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import tempfile
 from importlib import resources
@@ -47,6 +53,24 @@ RestartSec=3
 [Install]
 WantedBy=default.target
 """
+
+LIVEVIEW_UNIT = """[Unit]
+Description=CamThink AI live view web server (ai-pipeline)
+After=network.target
+
+[Service]
+Type=simple
+Environment=PYTHONPATH={root}/runtime
+Environment=PYTHONUNBUFFERED=1
+ExecStart={python} -m camthink_edge liveview --root {root}
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+"""
+
+LIVE_STATS_FRESH_S = 5.0
 
 
 def _int(v: str | None) -> int | None:
@@ -110,6 +134,31 @@ class CamThinkNG4511Target:
             return None
         return self._systemctl(action, self.cfg.service_name)
 
+    def _liveview_cmd(self, action: str) -> str | None:
+        if not self.cfg.liveview_service_name:
+            return None
+        return self._systemctl(action, self.cfg.liveview_service_name)
+
+    @property
+    def app_config_path(self) -> str:
+        return f"{self.root}/service/app.json"
+
+    @property
+    def live_dir(self) -> str:
+        """Mirror of ``camthink_edge.appcfg.live_dir`` for the device root (no symlink
+        resolution here: ``root`` is already absolute)."""
+        tag = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.root).strip("_")
+        return f"/dev/shm/camthink-ai-{tag}"
+
+    def _install_unit(self, name: str, text: str) -> str:
+        unit_dir = "$HOME/.config/systemd/user"
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / f"{name}.service"
+            p.write_text(text, encoding="utf-8")
+            self.host.run(f"mkdir -p {unit_dir}", timeout=30)
+            self.host.upload(p, f"~/.config/systemd/user/{name}.service")
+        return f"~/.config/systemd/user/{name}.service"
+
     @property
     def _stop_marker(self) -> str:
         """Written by `service_stop`, removed by anything that (re)starts the service, so a
@@ -165,7 +214,6 @@ class CamThinkNG4511Target:
         ):
             info["warnings"].append("neither OpenCV nor Pillow available for image IO")
         if self.cfg.service_name:
-            unit_dir = "$HOME/.config/systemd/user"
             source = (
                 f" --source {shlex.quote(self.cfg.inference_source)}"
                 if self.cfg.inference_source
@@ -174,11 +222,7 @@ class CamThinkNG4511Target:
             unit = SERVICE_UNIT.format(
                 root=self.root, python=self.cfg.python, fps=self.cfg.fps_limit, source=source
             )
-            with tempfile.TemporaryDirectory() as td:
-                p = Path(td) / f"{self.cfg.service_name}.service"
-                p.write_text(unit, encoding="utf-8")
-                self.host.run(f"mkdir -p {unit_dir}", timeout=30)
-                self.host.upload(p, f"~/.config/systemd/user/{self.cfg.service_name}.service")
+            unit_path = self._install_unit(self.cfg.service_name, unit)
             self.host.run(self._systemctl("daemon-reload"), timeout=60)
             self.host.run(self._systemctl("enable", self.cfg.service_name), timeout=60)
             linger = self.host.run(
@@ -188,7 +232,7 @@ class CamThinkNG4511Target:
             ).stdout.strip()
             info["service"] = {
                 "name": self.cfg.service_name,
-                "unit": f"~/.config/systemd/user/{self.cfg.service_name}.service",
+                "unit": unit_path,
                 "linger": linger,
             }
             if "Linger=yes" not in linger:
@@ -196,6 +240,17 @@ class CamThinkNG4511Target:
                     "user lingering is not enabled: the inference service stops when the user's last "
                     "session ends. One-time fix on the device: `loginctl enable-linger $(id -un)`"
                 )
+        if self.cfg.liveview_service_name:
+            # Installed but *not* enabled/started: `app liveview start` does that explicitly.
+            unit = LIVEVIEW_UNIT.format(root=self.root, python=self.cfg.python)
+            unit_path = self._install_unit(self.cfg.liveview_service_name, unit)
+            self.host.run(self._systemctl("daemon-reload"), timeout=60)
+            info["liveview"] = {
+                "name": self.cfg.liveview_service_name,
+                "unit": unit_path,
+                "port": self.cfg.liveview_port,
+                "enabled": False,
+            }
         return info
 
     # -- DeploymentTarget protocol -------------------------------------------------------------
@@ -536,6 +591,143 @@ class CamThinkNG4511Target:
         if cmd:
             self.host.run(cmd, timeout=120, check=to_deployment_id is not None)
         return {"previous": previous, "current": to_deployment_id, "at": utc_now_iso()}
+
+    # -- RTSP application config (M9) -------------------------------------------------------------
+
+    def app_config_read(self) -> dict[str, Any] | None:
+        """Raw ``service/app.json`` (contains credentials — callers must mask before output)."""
+        res = self.host.run(
+            f"cat {shlex.quote(self.app_config_path)} 2>/dev/null || true", timeout=30, check=False
+        )
+        text = res.stdout.strip()
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise OperationError(
+                f"device app config {self.app_config_path} is not valid JSON",
+                code="APP_CONFIG_INVALID",
+                details={"target": self.name, "error": str(exc)},
+                hint="`app source clear` rewrites it.",
+            ) from exc
+
+    def app_config_write(self, cfg: dict[str, Any]) -> None:
+        """Atomically replace ``service/app.json`` (mode 0600). Transferred by scp, never on a
+        command line, so credentials do not appear in process lists or shell logs."""
+        remote = self.app_config_path
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "app.json"
+            p.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+            p.chmod(0o600)
+            self.host.run(f"mkdir -p {shlex.quote(self.root + '/service')}", timeout=30)
+            self.host.upload(p, remote + ".tmp")
+        self.host.run(
+            f"chmod 600 {shlex.quote(remote + '.tmp')} && mv -f {shlex.quote(remote + '.tmp')} {shlex.quote(remote)}",
+            timeout=30,
+        )
+
+    def source_probe(self, *, seconds: float = 5.0, url: str | None = None) -> dict[str, Any]:
+        """Decode a few frames from the configured sources (or ``url``) on the device."""
+        if url is not None:
+            # Fed through stdin so the credentialed URL never appears in argv.
+            cmd = self._edge(
+                "probe", "--root", self.root, "--seconds", str(seconds), "--source-stdin"
+            )
+            return self.host.run_json(cmd, timeout=seconds * 4 + 60, stdin=url + "\n")
+        return self.host.run_json(
+            self._edge("probe", "--root", self.root, "--seconds", str(seconds)),
+            timeout=seconds * 4 + 60,
+        )
+
+    # -- live view service (M9) -------------------------------------------------------------------
+
+    def _require_liveview(self) -> str:
+        if not self.cfg.liveview_service_name:
+            raise OperationError(
+                f"target {self.name} has no live-view service configured (liveview_service_name: null)",
+                code="TARGET_NO_LIVEVIEW",
+                hint="Set deployment_targets.<name>.liveview_service_name in infrastructure.yaml "
+                "and run `target setup`.",
+            )
+        return self.cfg.liveview_service_name
+
+    def liveview_host(self) -> str | None:
+        """LAN address browsers should use: configured ``liveview_host`` or the SSH alias's
+        resolved HostName (``ssh -G``)."""
+        if self.cfg.liveview_host:
+            return self.cfg.liveview_host
+        return self.host.resolved_hostname()
+
+    def liveview_url(self, port: int | None = None) -> str | None:
+        """``port`` is the one from the device's app.json when the caller knows it; the
+        target's ``liveview_port`` is only the default used to seed that file."""
+        host = self.liveview_host()
+        if not host:
+            return None
+        return f"http://{host}:{port or self.cfg.liveview_port}/"
+
+    def liveview_status(self, port: int | None = None) -> dict[str, Any]:
+        cmd = self._liveview_cmd("is-active")
+        if cmd is None:
+            return {"service": None, "systemd_state": None, "enabled": None, "url": None}
+        enabled_cmd = self._liveview_cmd("is-enabled")
+        out = self.host.run(
+            f"{cmd} 2>/dev/null; echo '__EN__'; {enabled_cmd} 2>/dev/null; true",
+            timeout=60,
+            check=False,
+        ).stdout
+        state, _, enabled = out.partition("__EN__")
+        return {
+            "service": self.cfg.liveview_service_name,
+            "systemd_state": state.strip() or "unknown",
+            "enabled": enabled.strip() or "unknown",
+            "port": port or self.cfg.liveview_port,
+            "url": self.liveview_url(port),
+        }
+
+    def liveview_start(self) -> dict[str, Any]:
+        self._require_liveview()
+        before = self.liveview_status()["systemd_state"]
+        self.host.run(
+            f"{self._liveview_cmd('enable')} >/dev/null 2>&1; {self._liveview_cmd('start')}",
+            timeout=120,
+        )
+        return {"previous_state": before, "state": self.liveview_status()["systemd_state"]}
+
+    def liveview_stop(self) -> dict[str, Any]:
+        self._require_liveview()
+        before = self.liveview_status()["systemd_state"]
+        self.host.run(
+            f"{self._liveview_cmd('disable')} >/dev/null 2>&1; {self._liveview_cmd('stop')}",
+            timeout=120,
+        )
+        return {"previous_state": before, "state": self.liveview_status()["systemd_state"]}
+
+    def liveview_restart(self) -> dict[str, Any]:
+        self._require_liveview()
+        before = self.liveview_status()["systemd_state"]
+        self.host.run(
+            f"{self._liveview_cmd('enable')} >/dev/null 2>&1; {self._liveview_cmd('restart')}",
+            timeout=120,
+        )
+        return {"previous_state": before, "state": self.liveview_status()["systemd_state"]}
+
+    def live_stats(self) -> dict[str, Any] | None:
+        """The inference service's 1 Hz ``stats.json`` from shared memory (None when the
+        service is not in RTSP mode or has not published yet)."""
+        res = self.host.run(
+            f"cat {shlex.quote(self.live_dir + '/stats.json')} 2>/dev/null || true",
+            timeout=30,
+            check=False,
+        )
+        text = res.stdout.strip()
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return None
 
     # -- extras ------------------------------------------------------------------------------------
 

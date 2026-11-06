@@ -10,6 +10,8 @@ Simulates the phases the real NG4511 target will perform, with the same layout s
           deployment.json              metadata handed over by the orchestrator
           smoke.json  benchmark.json
       current -> deployments/<dep_id>  the active deployment (atomic symlink swap)
+      service/app.json                 RTSP app config (same shape as on the device)
+      liveview.json                    simulated live-view service state
       inject.json                      TEST ONLY: deterministic failure injection
 
 ``inject.json``::
@@ -30,12 +32,21 @@ import hashlib
 import json
 import os
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
 from ai_pipeline.core.errors import OperationError
 from ai_pipeline.core.ids import utc_now_iso
 from ai_pipeline.core.store import read_json, write_json_atomic
+
+
+def _mask(url: str) -> str:
+    if "://" in url and "@" in url:
+        scheme, rest = url.split("://", 1)
+        return f"{scheme}://***@{rest.rsplit('@', 1)[1]}"
+    return url
+
 
 DEFAULT_BENCHMARK = {
     "latency_ms_p50": 25.0,
@@ -301,6 +312,126 @@ class FakeTarget:
 
     def configure(self, **_: Any) -> None:
         return None
+
+    # -- RTSP application + live view (M9) ------------------------------------------
+
+    @property
+    def app_config_path(self) -> Path:
+        return self.root / "service" / "app.json"
+
+    def app_config_read(self) -> dict[str, Any] | None:
+        return read_json(self.app_config_path) if self.app_config_path.is_file() else None
+
+    def app_config_write(self, cfg: dict[str, Any]) -> None:
+        self.app_config_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(self.app_config_path, cfg)
+        os.chmod(self.app_config_path, 0o600)
+
+    def source_probe(self, *, seconds: float = 5.0, url: str | None = None) -> dict[str, Any]:
+        self._maybe_fail("source_probe")
+        cfg = self.app_config_read() or {}
+        urls = [url] if url is not None else [s["url"] for s in cfg.get("sources", [])]
+        out = []
+        for u in urls:
+            bad = "unreachable" in u
+            out.append(
+                {
+                    "name": "cam0",
+                    "url": _mask(u),
+                    "ok": not bad,
+                    "backend": "fake",
+                    "frames": 0 if bad else int(25 * seconds),
+                    "decode_fps": 0.0 if bad else 25.0,
+                    "first_frame_s": None if bad else 0.4,
+                    "size": None if bad else [1280, 720],
+                    "native_size": None if bad else [1920, 1080],
+                    "error": "connection refused" if bad else None,
+                    "seconds": seconds,
+                }
+            )
+        return {"ok": all(s["ok"] for s in out) and bool(out), "sources": out}
+
+    def _liveview(self) -> dict[str, Any]:
+        p = self.root / "liveview.json"
+        return read_json(p) if p.is_file() else {"state": "inactive", "enabled": "disabled"}
+
+    def _set_liveview(self, state: str, enabled: str) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(self.root / "liveview.json", {"state": state, "enabled": enabled})
+
+    def liveview_url(self, port: int | None = None) -> str | None:
+        return f"http://fake-device.lan:{port or 8080}/"
+
+    def liveview_status(self, port: int | None = None) -> dict[str, Any]:
+        lv = self._liveview()
+        return {
+            "service": "fake-liveview",
+            "systemd_state": lv["state"],
+            "enabled": lv["enabled"],
+            "port": port or 8080,
+            "url": self.liveview_url(port),
+        }
+
+    def liveview_start(self) -> dict[str, Any]:
+        self._maybe_fail("liveview_start")
+        before = self._liveview()["state"]
+        self._set_liveview("active", "enabled")
+        return {"previous_state": before, "state": "active"}
+
+    def liveview_stop(self) -> dict[str, Any]:
+        self._maybe_fail("liveview_stop")
+        before = self._liveview()["state"]
+        self._set_liveview("inactive", "disabled")
+        return {"previous_state": before, "state": "inactive"}
+
+    def liveview_restart(self) -> dict[str, Any]:
+        self._maybe_fail("liveview_restart")
+        before = self._liveview()["state"]
+        self._set_liveview("active", "enabled")
+        return {"previous_state": before, "state": "active"}
+
+    def live_stats(self) -> dict[str, Any] | None:
+        cfg = self.app_config_read()
+        if not cfg or not cfg.get("sources") or self._service()["state"] != "active":
+            return None
+        inf = cfg.get("inference", {})
+        current = self.current()
+        return {
+            "ts": utc_now_iso(),
+            "ts_epoch": time.time(),
+            "state": "running",
+            "deployment": current,
+            "camera_connected": True,
+            "fps": float(inf.get("fps", 10.0)),
+            "model": {
+                "project": current.rsplit("-dep-", 1)[0] if current else None,
+                "model_version": None,
+                "classes": ["object"],
+                "input_size": 640,
+                "precision": "fp16",
+                "confidence": inf.get("confidence") if inf.get("confidence") is not None else 0.25,
+            },
+            "channels": [
+                {
+                    "channel": i,
+                    "name": s.get("name") or f"ch{i}",
+                    "target_fps": float(inf.get("fps", 10.0)),
+                    "fps": float(inf.get("fps", 10.0)),
+                    "frames": 100,
+                    "errors": 0,
+                    "missed_slots": 0,
+                    "latency_ms": {"inference_p50": 12.0, "e2e_p50": 20.0},
+                    "source": {"connected": True, "decode_fps": 25.0, "reconnects": 0},
+                    "detections": 1,
+                    "detections_by_class": {"object": 1},
+                }
+                for i, s in enumerate(cfg["sources"])
+            ],
+            "system": {"cpu_pct": 20.0, "gpu_pct": 30.0, "ram_used_mb": 2000.0},
+            "system_backend": "fake",
+            "live": {"viewers": 0, "publishing": False, "publish_fps": 0.0},
+            "config_restart_required": {"inference": False, "liveview": False},
+        }
 
     def setup_runtime(self) -> dict[str, Any]:
         self._ensure_root()

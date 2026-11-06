@@ -67,27 +67,39 @@ def letterbox(img: np.ndarray, size: int, pad_value: int) -> tuple[np.ndarray, L
     resized = images.resize_rgb(img, new_w, new_h) if (new_w, new_h) != (w, h) else img
     pad_x = (size - new_w) / 2
     pad_y = (size - new_h) / 2
-    canvas = np.full((size, size, 3), pad_value, dtype=np.uint8)
+    canvas = np.full((size, size, img.shape[2]), pad_value, dtype=np.uint8)
     top, left = int(round(pad_y - 0.1)), int(round(pad_x - 0.1))
     canvas[top : top + new_h, left : left + new_w] = resized
     return canvas, Letterbox(gain, gain, left, top, w, h)
 
 
-def preprocess(img_rgb: np.ndarray, cfg: dict[str, Any]) -> tuple[np.ndarray, Letterbox]:
-    """HxWx3 RGB uint8 -> (1, 3, S, S) float32 network input + letterbox geometry."""
+def preprocess(
+    img: np.ndarray, cfg: dict[str, Any], *, bgr: bool = False
+) -> tuple[np.ndarray, Letterbox]:
+    """HxWx3 uint8 (RGB, or BGR with ``bgr=True``; a 4th channel such as BGRx padding is
+    ignored) -> (1, 3, S, S) float32 input + geometry.
+
+    Resize first, swap channels afterwards (on the small canvas), and scale each channel
+    straight into the NCHW buffer: on a Jetson CPU this is ~3x faster than
+    ``astype * scale`` + ``transpose`` + ``ascontiguousarray`` and avoids resizing a
+    negative-stride channel-swapped view (which costs ~10 ms at 720p)."""
     size = cfg["input_size"]
     pre = cfg["preprocess"]
     if pre["letterbox"]:
-        canvas, lb = letterbox(img_rgb, size, int(pre["pad_value"]))
+        canvas, lb = letterbox(img, size, int(pre["pad_value"]))
     else:  # plain stretch to the square input
-        h, w = img_rgb.shape[:2]
-        canvas = images.resize_rgb(img_rgb, size, size)
+        h, w = img.shape[:2]
+        canvas = images.resize_rgb(img, size, size)
         lb = Letterbox(size / w, size / h, 0.0, 0.0, w, h)
-    if pre["channels"] == "bgr":
+    if canvas.shape[2] == 4:
+        canvas = canvas[:, :, :3]
+    if bgr != (pre["channels"] == "bgr"):
         canvas = canvas[:, :, ::-1]
-    x = canvas.astype(np.float32) * float(pre["scale"])
-    x = np.transpose(x, (2, 0, 1))[None]
-    return np.ascontiguousarray(x), lb
+    scale = np.float32(pre["scale"])
+    x = np.empty((1, 3, size, size), dtype=np.float32)
+    for c in range(3):
+        np.multiply(canvas[:, :, c], scale, out=x[0, c], casting="unsafe")
+    return x, lb
 
 
 def nms(boxes: np.ndarray, scores: np.ndarray, iou_thr: float) -> np.ndarray:

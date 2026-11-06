@@ -9,6 +9,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import glob
+import os
 
 H2D = 1
 D2H = 2
@@ -20,9 +21,12 @@ def _load() -> ctypes.CDLL:
     global _lib
     if _lib is not None:
         return _lib
-    candidates = [ctypes.util.find_library("cudart")]
+    candidates = [os.environ.get("CAMTHINK_CUDART"), ctypes.util.find_library("cudart")]
     candidates += sorted(glob.glob("/usr/local/cuda*/lib64/libcudart.so*"), reverse=True)
     candidates += sorted(glob.glob("/usr/lib/aarch64-linux-gnu/libcudart.so*"), reverse=True)
+    # Plain sonames: dlopen honours LD_LIBRARY_PATH (user-space CUDA installs on JetPack 5),
+    # which ctypes.util.find_library does not.
+    candidates += ["libcudart.so.12", "libcudart.so.11.0", "libcudart.so"]
     errors = []
     for c in candidates:
         if not c:
