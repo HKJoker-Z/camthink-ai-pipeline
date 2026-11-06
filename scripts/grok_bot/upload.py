@@ -56,11 +56,15 @@ def _extract(archive: Path, dest: Path) -> int:
     n = 0
     if zipfile.is_zipfile(archive):
         with zipfile.ZipFile(archive) as z:
-            for m in z.infolist():
+            members = z.infolist()
+            for m in members:
+                # Windows PowerShell's Compress-Archive writes "\" separators; on Linux they
+                # would become part of the file name ("images\frame.jpg").
+                m.filename = m.filename.replace("\\", "/")
                 if not _safe_member(m.filename):
                     raise ValueError(f"unsafe member {m.filename!r}")
-            z.extractall(dest)
-            n = sum(1 for m in z.infolist() if not m.is_dir())
+            z.extractall(dest, members=members)
+            n = sum(1 for m in members if not m.is_dir())
     elif tarfile.is_tarfile(archive):
         with tarfile.open(archive) as t:
             members = t.getmembers()

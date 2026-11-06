@@ -94,3 +94,36 @@ def test_upload_rejects_bad_input(tmp_path: Path):
     assert out["error"]["code"] == "ARCHIVE_INVALID"
     assert not (repo / "projects" / "demo" / "data" / "escape.txt").exists()
     assert not (repo / "projects" / "demo" / "data" / "uploads" / "evil").exists()
+
+
+def test_upload_normalises_windows_separators(tmp_path: Path):
+    """Windows PowerShell 5.1 Compress-Archive stores ``labels\\frame.txt``; it must unpack as a
+    ``labels/`` folder, not as a file literally named ``labels\\frame.txt``."""
+    repo = tmp_path / "repo"
+    pdir = _project(repo)
+    archive = tmp_path / "reviewed.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr("review\\labels\\cam0_t0001s.txt", "0 0.5 0.5 0.1 0.1\n")
+        z.writestr("review\\labels\\cam0_t0002s.txt", "")
+        z.writestr("review\\classes.txt", "rodent\n")
+
+    code, out = _run(repo, ["demo", "reviewed.zip"], archive.read_bytes())
+    assert code == 0, out
+    dest = pdir / "data" / "uploads" / "reviewed"
+    assert sorted(p.name for p in (dest / "labels").iterdir()) == [
+        "cam0_t0001s.txt",
+        "cam0_t0002s.txt",
+    ]
+    assert out["result"]["label_root"] == str(dest / "labels")
+    assert out["result"]["class_name_files"] == [str(dest / "classes.txt")]
+
+
+def test_upload_rejects_windows_style_traversal(tmp_path: Path):
+    repo = tmp_path / "repo"
+    pdir = _project(repo)
+    archive = tmp_path / "evil.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr("..\\..\\outside.txt", "x")
+    code, out = _run(repo, ["demo", "evil.zip"], archive.read_bytes())
+    assert code == 1 and out["error"]["code"] == "ARCHIVE_INVALID"
+    assert not (pdir / "data" / "outside.txt").exists() and not (repo / "outside.txt").exists()
