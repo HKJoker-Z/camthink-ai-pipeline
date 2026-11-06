@@ -25,7 +25,16 @@ from typing import Any
 
 from ai_pipeline.core.errors import AlreadyExistsError, NotFoundError
 
-KINDS = ("imports", "labels", "datasets", "runs", "models", "exports", "deployments")
+KINDS = (
+    "imports",
+    "labels",
+    "label_exports",
+    "datasets",
+    "runs",
+    "models",
+    "exports",
+    "deployments",
+)
 PROJECT_RECORD = "project.json"
 
 
